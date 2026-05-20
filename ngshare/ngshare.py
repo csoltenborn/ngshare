@@ -937,6 +937,43 @@ class UploadDownloadFeedback(MyRequestHandler):
         )
 
 
+class BaseServiceListCourses(MyRequestHandler):
+    'Base class for service course-list handlers'
+
+    course_relation = None
+
+    def prepare(self):
+        # Override to avoid Hub auth; we only need DB session
+        self.db = self.application.db_session()
+
+    def on_finish(self):
+        self.db.close()
+
+    def _courses_for_user(self, user):
+        if self.course_relation is None:
+            self.json_error(500, 'Course relation not configured')
+        return getattr(user, self.course_relation)
+
+    def get(self, user_id):
+        user = self.db.query(User).filter(User.id == user_id).one_or_none()
+        if user is None:
+            self.json_success(courses=[])
+        courses = sorted([c.id for c in self._courses_for_user(user)])
+        self.json_success(courses=courses)
+
+
+class ServiceListInstructorCourses(BaseServiceListCourses):
+    '/service/instructor-courses/<user_id>'
+
+    course_relation = 'teaching'
+
+
+class ServiceListStudentCourses(BaseServiceListCourses):
+    '/service/student-courses/<user_id>'
+
+    course_relation = 'taking'
+
+
 class InitDatabase(MyRequestHandler):
     '/initialize-Data6ase'
 
@@ -1033,6 +1070,8 @@ class MyApplication(Application):
                 prefix + 'feedback/([^/]+)/([^/]+)/([^/]+)',
                 UploadDownloadFeedback,
             ),
+            (prefix + 'service/instructor-courses/([^/]+)', ServiceListInstructorCourses),
+            (prefix + 'service/student-courses/([^/]+)', ServiceListStudentCourses),
             (prefix + 'initialize-Data6ase', InitDatabase),
             (prefix + 'oauth_callback', JupyterHubLoginHandler),
             (prefix + 'healthz', HealthCheckHandler),
