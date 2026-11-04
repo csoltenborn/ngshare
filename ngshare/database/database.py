@@ -114,6 +114,11 @@ class Course(Base):
         cascade_scalar_deletes=True,
     )
     assignments = relationship('Assignment', backref='course')
+    counted_assignments = relationship(
+        'CountedAssignment',
+        backref='course',
+        cascade='save-update, merge, delete, delete-orphan',
+    )
 
     def dump(self):
         'Dump data to dict'
@@ -135,6 +140,8 @@ class Course(Base):
         'Remove course and dependent data'
         for assignment in self.assignments:
             assignment.delete(db)
+        for counted in self.counted_assignments[:]:
+            db.delete(counted)
         for student in self.students[:]:
             self.students.remove(student)
         for instructor in self.instructors[:]:
@@ -341,4 +348,26 @@ class StudentAssociation(Base):
             'first_name': self.first_name,
             'last_name': self.last_name,
             'email': self.email,
+        }
+
+
+class CountedAssignment(Base):
+    'An assignment marked by an instructor as counted toward point evaluation'
+    __tablename__ = 'counted_assignments'
+    course_id = Column(INTEGER, ForeignKey('courses._id'), primary_key=True)
+    assignment_id = Column(TEXT, primary_key=True)
+
+    def __init__(self, course, assignment_id):
+        'Initialize with course and assignment_id'
+        self.course = course
+        self.assignment_id = assignment_id
+
+    def __str__(self):
+        return '<CountedAssignment %s>' % self.assignment_id
+
+    def dump(self):
+        'Dump data to dict'
+        return {
+            'course_id': self.course_id,
+            'assignment_id': self.assignment_id,
         }

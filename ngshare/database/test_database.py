@@ -22,6 +22,7 @@ def clear_db(db, storage_path):
     db.query(User).delete()
     db.query(Course).delete()
     db.query(Assignment).delete()
+    db.query(CountedAssignment).delete()
     db.query(Submission).delete()
     db.query(File).delete()
     db.query(InstructorAssociation).delete()
@@ -91,6 +92,7 @@ def dump_db(db):
         User,
         Course,
         Assignment,
+        CountedAssignment,
         Submission,
         File,
         InstructorAssociation,

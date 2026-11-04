@@ -34,8 +34,10 @@ import requests
 
 try:
     from . import dbutil
+    from .results import evaluate_student_results
 except ImportError:  # pragma: no cover
     import dbutil
+    from results import evaluate_student_results
 
 try:
     from .database import (
@@ -43,6 +45,7 @@ try:
         User,
         Course,
         Assignment,
+        CountedAssignment,
         Submission,
         File,
         InstructorAssociation,
@@ -57,6 +60,7 @@ except ImportError:  # pragma: no cover
         User,
         Course,
         Assignment,
+        CountedAssignment,
         Submission,
         File,
         InstructorAssociation,
@@ -974,6 +978,125 @@ class ServiceListStudentCourses(BaseServiceListCourses):
     course_relation = 'taking'
 
 
+class ListCountedAssignments(MyRequestHandler):
+    '/api/counted_assignments/<course_id>'
+
+    @authenticated
+    def get(self, course_id):
+        'List counted assignment IDs for a course (students+instructors)'
+        course = self.find_course(course_id)
+        self.check_course_user(course)
+        counted = sorted([ca.assignment_id for ca in course.counted_assignments])
+        self.json_success(counted_assignments=counted)
+
+
+class ManageCountedAssignment(MyRequestHandler):
+    '/api/counted_assignment/<course_id>/<assignment_id>'
+
+    @authenticated
+    def post(self, course_id, assignment_id):
+        'Set whether an assignment is counted (instructors only)'
+        course = self.find_course(course_id)
+        self.check_course_instructor(course)
+        raw_counted = self.get_argument('counted', 'true').strip().lower()
+        if raw_counted not in ('true', 'false', '1', '0'):
+            self.json_error(400, 'Invalid counted value')
+        is_counted = raw_counted in ('true', '1')
+        existing = (
+            self.db.query(CountedAssignment)
+            .filter(
+                CountedAssignment.course == course,
+                CountedAssignment.assignment_id == assignment_id,
+            )
+            .one_or_none()
+        )
+        if is_counted and existing is None:
+            self.db.add(CountedAssignment(course, assignment_id))
+            self.db.commit()
+        elif not is_counted and existing is not None:
+            self.db.delete(existing)
+            self.db.commit()
+        self.json_success(counted=is_counted)
+
+    @authenticated
+    def delete(self, course_id, assignment_id):
+        'Unmark an assignment as counted (instructors only)'
+        course = self.find_course(course_id)
+        self.check_course_instructor(course)
+        existing = (
+            self.db.query(CountedAssignment)
+            .filter(
+                CountedAssignment.course == course,
+                CountedAssignment.assignment_id == assignment_id,
+            )
+            .one_or_none()
+        )
+        if existing is not None:
+            self.db.delete(existing)
+            self.db.commit()
+        self.json_success(counted=False)
+
+
+class StudentResults(MyRequestHandler):
+    '/api/results/<course_id>/<student_id>'
+
+    def _read_stored_files(self, file_objs):
+        items = []
+        storage_path = self.application.storage_path
+        for file_obj in file_objs:
+            actual_path = os.path.join(storage_path, file_obj.actual_name)
+            try:
+                with open(actual_path, 'rb') as fh:
+                    content = fh.read()
+                items.append((file_obj.filename, content))
+            except OSError:
+                continue
+        return items
+
+    @authenticated
+    def get(self, course_id, student_id):
+        'Compute point evaluation for a student in a course'
+        course = self.find_course(course_id)
+        if self.user.id != student_id:
+            self.check_course_instructor(course)
+        student = self.find_course_user(course, student_id)
+
+        counted_ids = [ca.assignment_id for ca in course.counted_assignments]
+        counted_set = set(counted_ids)
+
+        released_assignments = {}
+        student_submissions = {}
+
+        for assignment in course.assignments:
+            if assignment.id not in counted_set:
+                continue
+            released_assignments[assignment.id] = self._read_stored_files(
+                assignment.files
+            )
+            subs = []
+            for sub in self.find_student_submissions(assignment, student):
+                subs.append(
+                    {
+                        'timestamp': sub.timestamp,
+                        'feedback_files': self._read_stored_files(
+                            sub.feedbacks
+                        ),
+                    }
+                )
+            student_submissions[assignment.id] = subs
+
+        evaluation = evaluate_student_results(
+            counted_ids,
+            released_assignments,
+            student_submissions,
+        )
+        self.json_success(
+            course_id=course.id,
+            student_id=student.id,
+            **evaluation,
+        )
+
+
 class InitDatabase(MyRequestHandler):
     '/initialize-Data6ase'
 
@@ -1069,6 +1192,18 @@ class MyApplication(Application):
             (
                 prefix + 'feedback/([^/]+)/([^/]+)/([^/]+)',
                 UploadDownloadFeedback,
+            ),
+            (
+                prefix + 'counted_assignments/([^/]+)',
+                ListCountedAssignments,
+            ),
+            (
+                prefix + 'counted_assignment/([^/]+)/([^/]+)',
+                ManageCountedAssignment,
+            ),
+            (
+                prefix + 'results/([^/]+)/([^/]+)',
+                StudentResults,
             ),
             (prefix + 'service/instructor-courses/([^/]+)', ServiceListInstructorCourses),
             (prefix + 'service/student-courses/([^/]+)', ServiceListStudentCourses),
