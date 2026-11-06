@@ -946,18 +946,12 @@ class BaseServiceListCourses(MyRequestHandler):
 
     course_relation = None
 
-    def prepare(self):
-        # Override to avoid Hub auth; we only need DB session
-        self.db = self.application.db_session()
-
-    def on_finish(self):
-        self.db.close()
-
     def _courses_for_user(self, user):
         if self.course_relation is None:
             self.json_error(500, 'Course relation not configured')
         return getattr(user, self.course_relation)
 
+    @authenticated
     def get(self, user_id):
         user = self.db.query(User).filter(User.id == user_id).one_or_none()
         if user is None:
