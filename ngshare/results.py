@@ -120,6 +120,7 @@ def evaluate_student_results(
 
         submissions = list(student_submissions.get(assignment_id, []))
         submissions.sort(key=lambda s: s['timestamp'], reverse=True)
+        submitted = len(submissions) > 0
 
         points = 0.0
         feedback_max_sum = 0.0
@@ -154,6 +155,7 @@ def evaluate_student_results(
                 'points': clean_points,
                 'max_points': clean_max,
                 'graded': graded,
+                'submitted': submitted,
             }
         )
 
@@ -171,4 +173,53 @@ def evaluate_student_results(
         'total_max_points': total_max_points,
         'percentage': percentage,
     }
+
+
+def evaluate_course_results(
+    counted_assignment_ids: Iterable[str],
+    released_assignments: Dict[str, List[Tuple[str, bytes]]],
+    all_student_submissions: Dict[str, Dict[str, List[Dict]]],
+    student_ids: Iterable[str],
+) -> Dict:
+    '''
+    Compute point evaluation summary across all students in a course.
+    '''
+    counted_assignments = sorted(
+        set(counted_assignment_ids) & set(released_assignments.keys())
+    )
+    students_out = []
+    course_total_max = 0.0
+
+    for sid in sorted(student_ids):
+        student_subs = all_student_submissions.get(sid, {})
+        res = evaluate_student_results(
+            counted_assignment_ids,
+            released_assignments,
+            student_subs,
+        )
+        if res['total_max_points'] > course_total_max:
+            course_total_max = res['total_max_points']
+        students_out.append(
+            {
+                'student_id': sid,
+                'total_points': res['total_points'],
+                'total_max_points': res['total_max_points'],
+                'percentage': res['percentage'],
+                'assignments': res['assignments'],
+            }
+        )
+
+    if course_total_max == 0.0:
+        for assignment_id in counted_assignments:
+            for filename, content in released_assignments.get(assignment_id, []):
+                if filename.lower().endswith('.ipynb'):
+                    course_total_max += extract_notebook_max_score(content)
+        course_total_max = _clean_round(course_total_max)
+
+    return {
+        'counted_assignments': counted_assignments,
+        'total_max_points': course_total_max,
+        'students': students_out,
+    }
+
 

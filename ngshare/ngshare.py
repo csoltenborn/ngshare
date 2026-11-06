@@ -34,10 +34,10 @@ import requests
 
 try:
     from . import dbutil
-    from .results import evaluate_student_results
+    from .results import evaluate_student_results, evaluate_course_results
 except ImportError:  # pragma: no cover
     import dbutil
-    from results import evaluate_student_results
+    from results import evaluate_student_results, evaluate_course_results
 
 try:
     from .database import (
@@ -1091,6 +1091,59 @@ class StudentResults(MyRequestHandler):
         )
 
 
+class CourseResults(StudentResults):
+    '/api/course_results/<course_id>'
+
+    @authenticated
+    def get(self, course_id):
+        'Compute point evaluation for all students in a course'
+        course = self.find_course(course_id)
+        self.check_course_instructor(course)
+
+        counted_ids = [ca.assignment_id for ca in course.counted_assignments]
+        counted_set = set(counted_ids)
+
+        released_assignments = {}
+        for assignment in course.assignments:
+            if assignment.id not in counted_set:
+                continue
+            released_assignments[assignment.id] = self._read_stored_files(
+                assignment.files
+            )
+
+        all_student_submissions = {}
+        student_ids = [student.id for student in course.students]
+
+        for student in course.students:
+            student_subs = {}
+            for assignment in course.assignments:
+                if assignment.id not in counted_set:
+                    continue
+                subs = []
+                for sub in self.find_student_submissions(assignment, student):
+                    subs.append(
+                        {
+                            'timestamp': sub.timestamp,
+                            'feedback_files': self._read_stored_files(
+                                sub.feedbacks
+                            ),
+                        }
+                    )
+                student_subs[assignment.id] = subs
+            all_student_submissions[student.id] = student_subs
+
+        evaluation = evaluate_course_results(
+            counted_ids,
+            released_assignments,
+            all_student_submissions,
+            student_ids,
+        )
+        self.json_success(
+            course_id=course.id,
+            **evaluation,
+        )
+
+
 class InitDatabase(MyRequestHandler):
     '/initialize-Data6ase'
 
@@ -1198,6 +1251,10 @@ class MyApplication(Application):
             (
                 prefix + 'results/([^/]+)/([^/]+)',
                 StudentResults,
+            ),
+            (
+                prefix + 'course_results/([^/]+)',
+                CourseResults,
             ),
             (prefix + 'service/instructor-courses/([^/]+)', ServiceListInstructorCourses),
             (prefix + 'service/student-courses/([^/]+)', ServiceListStudentCourses),
