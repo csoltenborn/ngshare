@@ -371,6 +371,11 @@ class MyHelpers:
 
     def is_admin(self):
         'Return whether user is admin user'
+        service_token = self.settings.get('api_token')
+        if self.auth_token and service_token and self.auth_token == service_token:
+            return True
+        if self.user is None:
+            return False
         return self.user.id in self.application.admin
 
     def is_course_student(self, course, user):
@@ -467,6 +472,9 @@ class MyRequestHandler(HubOAuthenticated, RequestHandler, MyHelpers):
 
     def user_for_token(self, token):
         'Retrieve the user for a given token, via /hub/api/user'
+        service_token = self.settings.get('api_token')
+        if service_token and token == service_token:
+            return {'name': 'hub', 'admin': True, 'groups': []}
         r = requests.get(
             self.settings['user_url'],
             headers={'Authorization': f'token {token}'},
