@@ -8,6 +8,9 @@ from .database import (
     File,
     InstructorAssociation,
     StudentAssociation,
+    CourseSettings,
+    GlobalSetting,
+    SettingsAudit,
 )
 from .test_database import clear_db, init_db, dump_db
 
@@ -21,6 +24,9 @@ __all__ = [
     'File',
     'InstructorAssociation',
     'StudentAssociation',
+    'CourseSettings',
+    'GlobalSetting',
+    'SettingsAudit',
     'clear_db',
     'init_db',
     'dump_db',

@@ -105,12 +105,47 @@ class JupyterHubLoginHandler(RequestHandler):
             # complete oauth
             token = await self.token_for_code(code)
             # login successful, set cookie and redirect back to home
-            self.set_secure_cookie('ngshare-oauth-token', token)
-            self.redirect('/services/ngshare/')
+            is_secure = (self.request.protocol == 'https')
+            self.set_secure_cookie(
+                'ngshare-oauth-token',
+                token,
+                samesite='Lax',
+                secure=is_secure,
+            )
+            next_url = self.get_argument('next', None)
+            if not next_url:
+                state_arg = self.get_argument('state', None)
+                if state_arg:
+                    try:
+                        import base64
+                        state_pad = state_arg + '=' * (-len(state_arg) % 4)
+                        state_json = json.loads(base64.urlsafe_b64decode(state_pad).decode('utf-8'))
+                        if isinstance(state_json, dict) and state_json.get('next_url'):
+                            next_url = state_json.get('next_url')
+                    except Exception:
+                        pass
+            if not next_url:
+                next_cookie = self.get_secure_cookie('ngshare-oauth-next')
+                if next_cookie:
+                    try:
+                        next_url = next_cookie.decode('utf-8', 'replace')
+                    except Exception:
+                        next_url = None
+                    self.clear_cookie('ngshare-oauth-next')
+            self.redirect(next_url or '/services/ngshare/')
         else:
             # we are the login handler,
             # begin oauth process which will come back later with an
             # authorization_code
+            next_url = self.get_argument('next', None)
+            if next_url:
+                is_secure = (self.request.protocol == 'https')
+                self.set_secure_cookie(
+                    'ngshare-oauth-next',
+                    next_url,
+                    samesite='Lax',
+                    secure=is_secure,
+                )
             self.redirect(
                 url_concat(
                     self.settings['authorize_url'],
@@ -1213,6 +1248,34 @@ class HealthCheckHandler(RequestHandler):
         return
 
 
+try:
+    from .settings_handlers import (
+        GlobalSettingsHandler,
+        ClassesHandler,
+        ClassHandler,
+        ServiceUserClassesHandler,
+        ServiceSpawnConfigHandler,
+        SettingsAuditHandler,
+        UISettingsHandler,
+        UIClassesHandler,
+        UIClassNewHandler,
+        UIClassEditHandler,
+    )
+except ImportError:
+    from settings_handlers import (
+        GlobalSettingsHandler,
+        ClassesHandler,
+        ClassHandler,
+        ServiceUserClassesHandler,
+        ServiceSpawnConfigHandler,
+        SettingsAuditHandler,
+        UISettingsHandler,
+        UIClassesHandler,
+        UIClassNewHandler,
+        UIClassEditHandler,
+    )
+
+
 class MyApplication(Application):
     'Custom application for ngshare'
 
@@ -1266,6 +1329,16 @@ class MyApplication(Application):
             ),
             (prefix + 'service/instructor-courses/([^/]+)', ServiceListInstructorCourses),
             (prefix + 'service/student-courses/([^/]+)', ServiceListStudentCourses),
+            (prefix + 'settings/global', GlobalSettingsHandler),
+            (prefix + 'classes', ClassesHandler),
+            (prefix + 'classes/([^/]+)', ClassHandler),
+            (prefix + 'settings/audit', SettingsAuditHandler),
+            (prefix + 'ui/settings', UISettingsHandler),
+            (prefix + 'ui/classes/new', UIClassNewHandler),
+            (prefix + 'ui/classes', UIClassesHandler),
+            (prefix + 'ui/classes/([^/]+)', UIClassEditHandler),
+            (prefix + 'service/user-classes/([^/]+)', ServiceUserClassesHandler),
+            (prefix + 'service/spawn-config/([^/]+)', ServiceSpawnConfigHandler),
             (prefix + 'initialize-Data6ase', InitDatabase),
             (prefix + 'oauth_callback', JupyterHubLoginHandler),
             (prefix + 'healthz', HealthCheckHandler),
@@ -1278,6 +1351,7 @@ class MyApplication(Application):
         handlers.append((r'.*', NotFoundHandler))
         super(MyApplication, self).__init__(
             handlers,
+            template_path=os.path.dirname(os.path.realpath(__file__)),
             debug=debug,
             autoreload=autoreload,
             cookie_secret=os.urandom(32),
@@ -1290,6 +1364,7 @@ class MyApplication(Application):
             token_url=token_url,
             user_url=user_url,
         )
+        self.prefix = prefix
         # Connect Database
         engine = create_engine(db_url)
         Base.metadata.bind = engine

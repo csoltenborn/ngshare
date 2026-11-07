@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+
+{% block title %}Global Settings - JupyterHub{% end %}
+
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+    <div>
+        <h2 style="margin: 0; font-size: 1.5rem; color: #0f172a;">Global Settings</h2>
+        <p style="margin: 4px 0 0 0; color: #64748b;">Default resource limits across roles and permitted git hosts.</p>
+    </div>
+    <button type="button" id="save-settings-btn" class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+</div>
+
+<form id="settings-form" onsubmit="event.preventDefault(); saveSettings();">
+    <div class="card">
+        <h3 class="card-header-title">Default Resource Limits</h3>
+        <p class="field-hint" style="margin-bottom: 16px;">
+            Set default CPU and memory bounds applied when a spawned user pod has no course-specific override.
+            Leave blank if not constrained. Guarantee must not exceed Limit.
+        </p>
+
+        <div class="grid-3">
+            {% for role in ['student', 'instructor', 'admin'] %}
+            {% set r_limits = default_resource_limits.get(role, {}) if default_resource_limits else {} %}
+            {% set cpu_cfg = r_limits.get('cpu', {}) if r_limits else {} %}
+            {% set mem_cfg = r_limits.get('memory', {}) if r_limits else {} %}
+            <div style="border: 1px solid #e2e8f0; border-radius: 6px; padding: 16px; background: #fafafa;">
+                <h4 style="margin: 0 0 12px 0; text-transform: capitalize; color: #1e293b; font-size: 1.05rem;">
+                    {{ role }} Defaults
+                </h4>
+
+                <div class="form-group">
+                    <label for="limit-{{ role }}-cpu-limit">CPU Limit (cores)</label>
+                    <input type="number" step="any" min="0" class="form-control" id="limit-{{ role }}-cpu-limit"
+                        value="{{ cpu_cfg.get('limit') if cpu_cfg.get('limit') is not None else '' }}"
+                        placeholder="e.g. 1.0">
+                    <div class="field-error" id="err-{{ role }}-cpu-limit"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="limit-{{ role }}-cpu-guarantee">CPU Guarantee (cores)</label>
+                    <input type="number" step="any" min="0" class="form-control" id="limit-{{ role }}-cpu-guarantee"
+                        value="{{ cpu_cfg.get('guarantee') if cpu_cfg.get('guarantee') is not None else '' }}"
+                        placeholder="e.g. 0.1">
+                    <div class="field-error" id="err-{{ role }}-cpu-guarantee"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="limit-{{ role }}-mem-limit">Memory Limit</label>
+                    <input type="text" class="form-control" id="limit-{{ role }}-mem-limit"
+                        value="{{ mem_cfg.get('limit') if mem_cfg.get('limit') is not None else '' }}"
+                        placeholder="e.g. 1G, 512M">
+                    <div class="field-error" id="err-{{ role }}-mem-limit"></div>
+                </div>
+
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label for="limit-{{ role }}-mem-guarantee">Memory Guarantee</label>
+                    <input type="text" class="form-control" id="limit-{{ role }}-mem-guarantee"
+                        value="{{ mem_cfg.get('guarantee') if mem_cfg.get('guarantee') is not None else '' }}"
+                        placeholder="e.g. 512M">
+                    <div class="field-error" id="err-{{ role }}-mem-guarantee"></div>
+                </div>
+            </div>
+            {% end %}
+        </div>
+    </div>
+
+    <div class="card">
+        <h3 class="card-header-title">Allowed Git Hosts</h3>
+        <p class="field-hint" style="margin-bottom: 12px;">
+            Specify hostnames permitted for course material git repositories (one host per line).
+            Courses using any git host outside this allowlist will be rejected.
+        </p>
+        <div class="form-group" style="margin-bottom: 0;">
+            <textarea id="allowed-git-hosts" class="form-control" rows="4"
+                style="font-family: monospace;">{{ '\n'.join(allowed_git_hosts) if allowed_git_hosts else '' }}</textarea>
+            <div class="field-error" id="err-allowed-git-hosts"></div>
+        </div>
+    </div>
+</form>
+{% end %}
+
+{% block scripts %}
+<script>
+    async function saveSettings() {
+        clearAlert();
+        document.querySelectorAll('.field-error').forEach(el => {
+            el.style.display = 'none';
+            el.innerText = '';
+        });
+
+        const btn = document.getElementById('save-settings-btn');
+        btn.disabled = true;
+        btn.innerText = 'Saving...';
+
+        const roles = ['student', 'instructor', 'admin'];
+        const defaultResourceLimits = {};
+
+        for (const role of roles) {
+            const cpuLimitVal = document.getElementById(`limit-${role}-cpu-limit`).value.trim();
+            const cpuGuarVal = document.getElementById(`limit-${role}-cpu-guarantee`).value.trim();
+            const memLimitVal = document.getElementById(`limit-${role}-mem-limit`).value.trim();
+            const memGuarVal = document.getElementById(`limit-${role}-mem-guarantee`).value.trim();
+
+            const roleLimits = {};
+            if (cpuLimitVal || cpuGuarVal) {
+                roleLimits.cpu = {};
+                if (cpuLimitVal) roleLimits.cpu.limit = parseFloat(cpuLimitVal);
+                if (cpuGuarVal) roleLimits.cpu.guarantee = parseFloat(cpuGuarVal);
+            }
+            if (memLimitVal || memGuarVal) {
+                roleLimits.memory = {};
+                if (memLimitVal) roleLimits.memory.limit = memLimitVal;
+                if (memGuarVal) roleLimits.memory.guarantee = memGuarVal;
+            }
+
+            if (Object.keys(roleLimits).length > 0) {
+                defaultResourceLimits[role] = roleLimits;
+            }
+        }
+
+        const rawHosts = document.getElementById('allowed-git-hosts').value;
+        const allowedHosts = rawHosts
+            .split('\n')
+            .map(h => h.trim())
+            .filter(h => h.length > 0);
+
+        const payload = {
+            default_resource_limits: defaultResourceLimits,
+            allowed_git_hosts: allowedHosts
+        };
+
+        try {
+            const resp = await fetch('{{ prefix }}settings/global', {
+                method: 'PUT',
+                credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            });
+
+            const data = await resp.json();
+            if (resp.ok && data.success) {
+                showAlert('success', 'Global settings saved successfully.');
+            } else {
+                const msg = data.message || 'Failed to save settings.';
+                showAlert('danger', msg);
+                if (data.errors && typeof data.errors === 'object') {
+                    for (const [k, v] of Object.entries(data.errors)) {
+                        // Match field errors
+                        showAlert('danger', `${msg} (${k}: ${v})`);
+                    }
+                }
+            }
+        } catch (err) {
+            showAlert('danger', 'Network error while saving settings: ' + err.message);
+        } finally {
+            btn.disabled = false;
+            btn.innerText = 'Save Settings';
+        }
+    }
+</script>
+{% end %}

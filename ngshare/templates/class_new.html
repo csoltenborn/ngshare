@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+
+{% block title %}New Class - JupyterHub{% end %}
+
+{% block content %}
+<div style="margin-bottom: 20px;">
+    <a href="{{ prefix }}ui/classes" style="color: #2563eb; text-decoration: none; font-size: 0.9rem;">&larr; Back to
+        Classes</a>
+    <h2 style="margin: 8px 0 0 0; font-size: 1.5rem; color: #0f172a;">Create New Class</h2>
+    <p style="margin: 4px 0 0 0; color: #64748b;">Configure class metadata, instructors, material repository, and
+        optional resource limit overrides.</p>
+</div>
+
+<form id="new-class-form" onsubmit="event.preventDefault(); createClass();">
+    <div class="card">
+        <h3 class="card-header-title">Basic Information</h3>
+        <div class="grid-3" style="grid-template-columns: 1fr 2fr;">
+            <div class="form-group">
+                <label for="class-id">Class ID *</label>
+                <input type="text" class="form-control" id="class-id" required pattern="^[a-zA-Z0-9_\-]+$"
+                    placeholder="e.g. prg1_26q1" style="font-family: monospace;">
+                <div class="field-hint">Alphanumeric, underscores, hyphens only. <strong>Cannot be changed
+                        later.</strong></div>
+            </div>
+            <div class="form-group">
+                <label for="class-display-name">Display Name</label>
+                <input type="text" class="form-control" id="class-display-name"
+                    placeholder="e.g. Programmieren 1 (2026 Q1)">
+                <div class="field-hint">Shown to users on the spawn page.</div>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label for="class-instructors">Instructors *</label>
+            <input type="text" class="form-control" id="class-instructors" required placeholder="e.g. alice, bob">
+            <div class="field-hint">Comma- or space-separated list of instructor usernames. At least one required.</div>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0;">
+            <label
+                style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: normal; color: #1e293b;">
+                <input type="checkbox" id="class-enabled" checked>
+                Enable class immediately (enrolled students can select and spawn into it)
+            </label>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3 class="card-header-title">Course Materials Repository (Git)</h3>
+        <p class="field-hint" style="margin-bottom: 16px;">
+            If configured, materials are synced into user pods on launch.
+            {% if allowed_git_hosts %}
+            Allowed hosts: <code>{{ ', '.join(allowed_git_hosts) }}</code>.
+            {% end %}
+        </p>
+
+        <div class="form-group">
+            <label for="git-url">Repository URL</label>
+            <input type="url" class="form-control" id="git-url" placeholder="https://github.com/org/repo.git">
+            <div class="field-hint">Must use HTTPS. Userinfo (passwords in URL) and queries are rejected.</div>
+        </div>
+
+        <div class="grid-3">
+            <div class="form-group">
+                <label for="git-branch">Branch</label>
+                <input type="text" class="form-control" id="git-branch" value="main" placeholder="main">
+            </div>
+            <div class="form-group">
+                <label for="git-username">Username</label>
+                <input type="text" class="form-control" id="git-username" value="x-access-token"
+                    placeholder="x-access-token">
+                <div class="field-hint">GitHub uses <code>x-access-token</code> for PATs.</div>
+            </div>
+            <div class="form-group">
+                <label for="git-token">Personal Access Token (PAT)</label>
+                <input type="password" class="form-control" id="git-token" autocomplete="new-password"
+                    placeholder="Optional token for private repos">
+                <div class="field-hint">Stored encrypted in ngshare. Never sent to user pods or logs.</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3 class="card-header-title">Resource Limit Overrides (Optional)</h3>
+        <p class="field-hint" style="margin-bottom: 16px;">
+            Override global default limits specifically for students, instructors, or admins in this class.
+            Leave blank to inherit global defaults.
+        </p>
+
+        <div class="grid-3">
+            {% for role in ['student', 'instructor', 'admin'] %}
+            <div style="border: 1px solid #e2e8f0; border-radius: 6px; padding: 16px; background: #fafafa;">
+                <h4 style="margin: 0 0 12px 0; text-transform: capitalize; color: #1e293b; font-size: 1.05rem;">
+                    {{ role }} Limits
+                </h4>
+                <div class="form-group">
+                    <label for="res-{{ role }}-cpu-limit">CPU Limit (cores)</label>
+                    <input type="number" step="any" min="0" class="form-control" id="res-{{ role }}-cpu-limit"
+                        placeholder="Inherit global">
+                </div>
+                <div class="form-group">
+                    <label for="res-{{ role }}-cpu-guar">CPU Guarantee (cores)</label>
+                    <input type="number" step="any" min="0" class="form-control" id="res-{{ role }}-cpu-guar"
+                        placeholder="Inherit global">
+                </div>
+                <div class="form-group">
+                    <label for="res-{{ role }}-mem-limit">Memory Limit</label>
+                    <input type="text" class="form-control" id="res-{{ role }}-mem-limit" placeholder="e.g. 2G">
+                </div>
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label for="res-{{ role }}-mem-guar">Memory Guarantee</label>
+                    <input type="text" class="form-control" id="res-{{ role }}-mem-guar" placeholder="e.g. 1G">
+                </div>
+            </div>
+            {% end %}
+        </div>
+    </div>
+
+    <div style="display: flex; gap: 12px; align-items: center;">
+        <button type="submit" id="create-class-btn" class="btn btn-primary">Create Class</button>
+        <a href="{{ prefix }}ui/classes" class="btn btn-default">Cancel</a>
+    </div>
+</form>
+{% end %}
+
+{% block scripts %}
+<script>
+    async function createClass() {
+        clearAlert();
+        const btn = document.getElementById('create-class-btn');
+        btn.disabled = true;
+        btn.innerText = 'Creating...';
+
+        const id = document.getElementById('class-id').value.trim();
+        const displayName = document.getElementById('class-display-name').value.trim();
+        const enabled = document.getElementById('class-enabled').checked;
+
+        const rawInst = document.getElementById('class-instructors').value;
+        const instructors = rawInst
+            .split(/[\s,]+/)
+            .map(u => u.trim())
+            .filter(u => u.length > 0);
+
+        const gitUrl = document.getElementById('git-url').value.trim();
+        const gitBranch = document.getElementById('git-branch').value.trim() || 'main';
+        const gitUsername = document.getElementById('git-username').value.trim() || 'x-access-token';
+        const gitToken = document.getElementById('git-token').value.trim();
+
+        let git = null;
+        if (gitUrl) {
+            git = {
+                url: gitUrl,
+                branch: gitBranch,
+                username: gitUsername
+            };
+            if (gitToken) {
+                git.token = gitToken;
+            }
+        }
+
+        const roles = ['student', 'instructor', 'admin'];
+        const resourceLimits = {};
+        for (const role of roles) {
+            const cpuLimitVal = document.getElementById(`res-${role}-cpu-limit`).value.trim();
+            const cpuGuarVal = document.getElementById(`res-${role}-cpu-guar`).value.trim();
+            const memLimitVal = document.getElementById(`res-${role}-mem-limit`).value.trim();
+            const memGuarVal = document.getElementById(`res-${role}-mem-guar`).value.trim();
+
+            const roleLimits = {};
+            if (cpuLimitVal || cpuGuarVal) {
+                roleLimits.cpu = {};
+                if (cpuLimitVal) roleLimits.cpu.limit = parseFloat(cpuLimitVal);
+                if (cpuGuarVal) roleLimits.cpu.guarantee = parseFloat(cpuGuarVal);
+            }
+            if (memLimitVal || memGuarVal) {
+                roleLimits.memory = {};
+                if (memLimitVal) roleLimits.memory.limit = memLimitVal;
+                if (memGuarVal) roleLimits.memory.guarantee = memGuarVal;
+            }
+            if (Object.keys(roleLimits).length > 0) {
+                resourceLimits[role] = roleLimits;
+            }
+        }
+
+        const payload = {
+            id: id,
+            instructors: instructors,
+            enabled: enabled
+        };
+        if (displayName) payload.display_name = displayName;
+        if (git) payload.git = git;
+        if (Object.keys(resourceLimits).length > 0) payload.resource_limits = resourceLimits;
+
+        try {
+            const resp = await fetch('{{ prefix }}classes', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            });
+
+            const data = await resp.json();
+            if (resp.status === 201 && data.success) {
+                window.location.href = '{{ prefix }}ui/classes';
+            } else {
+                const msg = data.message || 'Failed to create class.';
+                showAlert('danger', msg);
+            }
+        } catch (err) {
+            showAlert('danger', 'Network error creating class: ' + err.message);
+        } finally {
+            btn.disabled = false;
+            btn.innerText = 'Create Class';
+        }
+    }
+</script>
+{% end %}

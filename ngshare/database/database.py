@@ -119,6 +119,12 @@ class Course(Base):
         backref='course',
         cascade='save-update, merge, delete, delete-orphan',
     )
+    settings = relationship(
+        'CourseSettings',
+        backref=backref('course', uselist=False),
+        uselist=False,
+        cascade='save-update, merge, delete, delete-orphan',
+    )
 
     def dump(self):
         'Dump data to dict'
@@ -142,6 +148,8 @@ class Course(Base):
             assignment.delete(db)
         for counted in self.counted_assignments[:]:
             db.delete(counted)
+        if self.settings:
+            db.delete(self.settings)
         for student in self.students[:]:
             self.students.remove(student)
         for instructor in self.instructors[:]:
@@ -371,3 +379,151 @@ class CountedAssignment(Base):
             'course_id': self.course_id,
             'assignment_id': self.assignment_id,
         }
+
+
+class CourseSettings(Base):
+    'Settings and configuration for a course'
+    __tablename__ = 'course_settings'
+    __mapper_args__ = {'confirm_deleted_rows': False}
+    course_id = Column(TEXT, ForeignKey('courses.id'), primary_key=True)
+    display_name = Column(TEXT, nullable=True)
+    enabled = Column(BOOLEAN, default=True, nullable=False)
+    git_url = Column(TEXT, nullable=True)
+    git_branch = Column(TEXT, nullable=True)
+    git_username = Column(TEXT, nullable=True)
+    git_token_enc = Column(TEXT, nullable=True)
+    resource_limits_json = Column(TEXT, nullable=True)
+    updated_at = Column(
+        TIMESTAMP,
+        default=datetime.datetime.utcnow,
+        onupdate=datetime.datetime.utcnow,
+    )
+    updated_by = Column(TEXT, nullable=True)
+
+    def __init__(
+        self,
+        course_id,
+        display_name=None,
+        enabled=True,
+        git_url=None,
+        git_branch='main',
+        git_username='x-access-token',
+        git_token_enc=None,
+        resource_limits_json=None,
+        updated_by=None,
+    ):
+        self.course_id = course_id
+        self.display_name = display_name
+        self.enabled = enabled
+        self.git_url = git_url
+        self.git_branch = git_branch
+        self.git_username = git_username
+        self.git_token_enc = git_token_enc
+        self.resource_limits_json = resource_limits_json
+        self.updated_by = updated_by
+
+    def __str__(self):
+        return '<CourseSettings %s>' % self.course_id
+
+    def dump(self):
+        'Dump data to dict. Excludes git_token_enc for security.'
+        return {
+            'course_id': self.course_id,
+            'display_name': self.display_name,
+            'enabled': bool(self.enabled),
+            'git_url': self.git_url,
+            'git_branch': self.git_branch,
+            'git_username': self.git_username,
+            'resource_limits_json': self.resource_limits_json,
+            'updated_at': (
+                self.updated_at.strftime('%Y-%m-%d %H:%M:%S.%f %Z')
+                if self.updated_at
+                else None
+            ),
+            'updated_by': self.updated_by,
+        }
+
+
+class GlobalSetting(Base):
+    'Global configuration setting'
+    __tablename__ = 'global_settings'
+    key = Column(TEXT, primary_key=True)
+    value_json = Column(TEXT, nullable=False)
+    updated_at = Column(
+        TIMESTAMP,
+        default=datetime.datetime.utcnow,
+        onupdate=datetime.datetime.utcnow,
+    )
+    updated_by = Column(TEXT, nullable=True)
+
+    def __init__(self, key, value_json, updated_by=None):
+        self.key = key
+        self.value_json = value_json
+        self.updated_by = updated_by
+
+    def __str__(self):
+        return '<GlobalSetting %s>' % self.key
+
+    def dump(self):
+        return {
+            'key': self.key,
+            'value_json': self.value_json,
+            'updated_at': (
+                self.updated_at.strftime('%Y-%m-%d %H:%M:%S.%f %Z')
+                if self.updated_at
+                else None
+            ),
+            'updated_by': self.updated_by,
+        }
+
+
+class SettingsAudit(Base):
+    'Audit log for settings and class modifications'
+    __tablename__ = 'settings_audit'
+    _id = Column(INTEGER, primary_key=True, autoincrement=True)
+    timestamp = Column(TIMESTAMP, default=datetime.datetime.utcnow)
+    actor = Column(TEXT, nullable=False)
+    scope = Column(TEXT, nullable=False)
+    course_id = Column(TEXT, nullable=True)
+    action = Column(TEXT, nullable=False)
+    changes_json = Column(TEXT, nullable=False)
+
+    def __init__(
+        self,
+        actor,
+        scope,
+        action,
+        changes_json,
+        course_id=None,
+        timestamp=None,
+    ):
+        self.actor = actor
+        self.scope = scope
+        self.action = action
+        self.changes_json = changes_json
+        self.course_id = course_id
+        if timestamp is not None:
+            self.timestamp = timestamp
+
+    def __str__(self):
+        return '<SettingsAudit %s %s %s>' % (
+            self.scope,
+            self.action,
+            self.course_id,
+        )
+
+    def dump(self):
+        return {
+            '_id': self._id,
+            'timestamp': (
+                self.timestamp.strftime('%Y-%m-%d %H:%M:%S.%f %Z')
+                if self.timestamp
+                else None
+            ),
+            'actor': self.actor,
+            'scope': self.scope,
+            'course_id': self.course_id,
+            'action': self.action,
+            'changes_json': self.changes_json,
+        }
+
