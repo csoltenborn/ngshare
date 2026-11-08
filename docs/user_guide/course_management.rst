@@ -1,7 +1,7 @@
 Course Management
 =================
 
-To manage students in your course, please don't use formgrader's web interface since it doesn't use ngshare. Instead, use the ``ngshare-course-management`` command that gets installed with ``ngshare_exchange``. You can use ``ngshare-course-management -h`` to view the help message, and ``ngshare-course-management subcommand -h`` to view details on how to use the subcommand.
+To manage students in your course, you can use the **Formgrader** web interface ("Manage Students"), which synchronizes with ``ngshare``, or the ``ngshare-course-management`` command installed with ``ngshare_exchange``. You can use ``ngshare-course-management -h`` to view the help message, and ``ngshare-course-management subcommand -h`` to view details on how to use the subcommand.
 
 Admin Only Commands
 -------------------
