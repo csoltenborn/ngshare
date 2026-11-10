@@ -8,7 +8,7 @@ import tempfile
 
 from collections import defaultdict
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 Session = None
@@ -23,6 +23,7 @@ def clear_db(db, storage_path):
     db.query(Course).delete()
     db.query(Assignment).delete()
     db.query(CountedAssignment).delete()
+    db.query(BonusScheme).delete()
     db.query(CourseSettings).delete()
     db.query(GlobalSetting).delete()
     db.query(SettingsAudit).delete()
@@ -35,7 +36,7 @@ def clear_db(db, storage_path):
         'submission_files_assoc_table',
         'feedback_files_assoc_table',
     ]:
-        db.execute('DELETE FROM %s' % table_name)
+        db.execute(text('DELETE FROM %s' % table_name))
     db.commit()
     if storage_path is not None:
         shutil.rmtree(storage_path, ignore_errors=True)
@@ -96,6 +97,7 @@ def dump_db(db):
         Course,
         Assignment,
         CountedAssignment,
+        BonusScheme,
         CourseSettings,
         GlobalSetting,
         SettingsAudit,

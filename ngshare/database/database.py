@@ -4,6 +4,7 @@
 
 import datetime
 import hashlib
+import json
 
 from sqlalchemy import (
     Table,
@@ -148,6 +149,7 @@ class Course(Base):
             assignment.delete(db)
         for counted in self.counted_assignments[:]:
             db.delete(counted)
+        db.query(BonusScheme).filter(BonusScheme.course_id == self._id).delete()
         if self.settings:
             db.delete(self.settings)
         for student in self.students[:]:
@@ -526,4 +528,51 @@ class SettingsAudit(Base):
             'action': self.action,
             'changes_json': self.changes_json,
         }
+
+
+class BonusScheme(Base):
+    'Optional bonus scheme for a course (one row per course)'
+    __tablename__ = 'bonus_schemes'
+    course_id = Column(INTEGER, ForeignKey('courses._id'), primary_key=True)
+    scheme_type = Column(TEXT, nullable=False, default='none')
+    student_visibility = Column(TEXT, nullable=False, default='full')
+    entries_json = Column(TEXT, nullable=False, default='[]')
+    updated_at = Column(
+        TIMESTAMP,
+        default=datetime.datetime.utcnow,
+        onupdate=datetime.datetime.utcnow,
+    )
+    updated_by = Column(TEXT, nullable=True)
+
+    def __init__(self, course_id):
+        self.course_id = course_id
+        self.scheme_type = 'none'
+        self.student_visibility = 'full'
+        self.entries_json = '[]'
+
+    def __str__(self):
+        return '<BonusScheme %s>' % self.course_id
+
+    def to_scheme(self):
+        'Return canonical scheme dict'
+        try:
+            entries = json.loads(self.entries_json or '[]')
+        except ValueError:
+            entries = []
+        return {
+            'scheme_type': self.scheme_type or 'none',
+            'student_visibility': self.student_visibility or 'full',
+            'entries': entries if isinstance(entries, list) else [],
+        }
+
+    def dump(self):
+        'Dump data to dict'
+        return {
+            'course_id': self.course_id,
+            'scheme_type': self.scheme_type,
+            'student_visibility': self.student_visibility,
+            'entries_json': self.entries_json,
+            'updated_by': self.updated_by,
+        }
+
 

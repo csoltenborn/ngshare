@@ -34,10 +34,18 @@ import requests
 
 try:
     from . import dbutil
-    from .results import evaluate_student_results, evaluate_course_results
+    from .results import (
+        evaluate_student_results,
+        evaluate_course_results,
+        build_student_bonus_view,
+    )
 except ImportError:  # pragma: no cover
     import dbutil
-    from results import evaluate_student_results, evaluate_course_results
+    from results import (
+        evaluate_student_results,
+        evaluate_course_results,
+        build_student_bonus_view,
+    )
 
 try:
     from .database import (
@@ -1127,6 +1135,16 @@ class StudentResults(MyRequestHandler):
             released_assignments,
             student_submissions,
         )
+        scheme = load_bonus_scheme(self.db, course)
+        viewer_is_instructor = self.is_admin() or (
+            self.user is not None and self.is_course_instructor(course, self.user)
+        )
+        evaluation['bonus'] = build_student_bonus_view(
+            scheme,
+            evaluation['total_points'],
+            evaluation['percentage'],
+            viewer_is_instructor,
+        )
         self.json_success(
             course_id=course.id,
             student_id=student.id,
@@ -1180,7 +1198,19 @@ class CourseResults(StudentResults):
             released_assignments,
             all_student_submissions,
             student_ids,
+            bonus_scheme=load_bonus_scheme(self.db, course),
         )
+        users_by_id = {s.id: s for s in course.students}
+        for s in evaluation['students']:
+            user_obj = users_by_id.get(s['student_id'])
+            info = (
+                self.wrap_student_info(user_obj, course)
+                if user_obj
+                else {'first_name': '', 'last_name': '', 'email': ''}
+            )
+            s['first_name'] = info['first_name'] or ''
+            s['last_name'] = info['last_name'] or ''
+            s['email'] = info['email'] or ''
         self.json_success(
             course_id=course.id,
             **evaluation,
@@ -1275,6 +1305,11 @@ except ImportError:
         UIClassEditHandler,
     )
 
+try:
+    from .bonus_handlers import BonusSchemeHandler, load_bonus_scheme
+except ImportError:
+    from bonus_handlers import BonusSchemeHandler, load_bonus_scheme
+
 
 class MyApplication(Application):
     'Custom application for ngshare'
@@ -1326,6 +1361,10 @@ class MyApplication(Application):
             (
                 prefix + 'course_results/([^/]+)',
                 CourseResults,
+            ),
+            (
+                prefix + 'bonus_scheme/([^/]+)',
+                BonusSchemeHandler,
             ),
             (prefix + 'service/instructor-courses/([^/]+)', ServiceListInstructorCourses),
             (prefix + 'service/student-courses/([^/]+)', ServiceListStudentCourses),

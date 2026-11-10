@@ -3,6 +3,7 @@
 '''
 
 import json
+import math
 import re
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -180,6 +181,7 @@ def evaluate_course_results(
     released_assignments: Dict[str, List[Tuple[str, bytes]]],
     all_student_submissions: Dict[str, Dict[str, List[Dict]]],
     student_ids: Iterable[str],
+    bonus_scheme: Optional[Dict] = None,
 ) -> Dict:
     '''
     Compute point evaluation summary across all students in a course.
@@ -205,6 +207,9 @@ def evaluate_course_results(
                 'total_points': res['total_points'],
                 'total_max_points': res['total_max_points'],
                 'percentage': res['percentage'],
+                'bonus_points': compute_bonus(
+                    bonus_scheme, res['total_points'], res['percentage']
+                ),
                 'assignments': res['assignments'],
             }
         )
@@ -219,7 +224,157 @@ def evaluate_course_results(
     return {
         'counted_assignments': counted_assignments,
         'total_max_points': course_total_max,
+        'bonus_scheme': (
+            bonus_scheme if is_bonus_scheme_active(bonus_scheme) else None
+        ),
         'students': students_out,
     }
+
+
+BONUS_SCHEME_TYPES = ('none', 'percentage', 'absolute')
+BONUS_VISIBILITIES = ('full', 'thresholds', 'hidden')
+BONUS_MAX_ENTRIES = 50
+_EPS = 1e-9
+
+
+class BonusSchemeError(ValueError):
+    '''Raised when a bonus scheme payload is invalid.'''
+
+
+def default_bonus_scheme() -> Dict:
+    return {'scheme_type': 'none', 'student_visibility': 'full', 'entries': []}
+
+
+def normalize_bonus_scheme(raw: Dict) -> Dict:
+    '''
+    Validate raw bonus scheme dict and return a new canonical dict.
+    '''
+    if not isinstance(raw, dict):
+        raise BonusSchemeError('Bonus scheme must be a dict.')
+
+    scheme_type = raw.get('scheme_type', 'none')
+    if scheme_type not in BONUS_SCHEME_TYPES:
+        raise BonusSchemeError(f'Invalid scheme type: {scheme_type}')
+
+    student_visibility = raw.get('student_visibility', 'full')
+    if student_visibility not in BONUS_VISIBILITIES:
+        raise BonusSchemeError(
+            f'Invalid student visibility: {student_visibility}'
+        )
+
+    raw_entries = raw.get('entries', [])
+    if not isinstance(raw_entries, list):
+        raise BonusSchemeError('Entries must be a list.')
+    if len(raw_entries) > BONUS_MAX_ENTRIES:
+        raise BonusSchemeError(
+            f'At most {BONUS_MAX_ENTRIES} entries allowed.'
+        )
+
+    normalized_entries = []
+    seen_thresholds = set()
+
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            raise BonusSchemeError('Each entry must be a dictionary.')
+        if 'threshold' not in entry or 'bonus' not in entry:
+            raise BonusSchemeError(
+                "Each entry must contain 'threshold' and 'bonus'."
+            )
+
+        t = entry['threshold']
+        if isinstance(t, bool) or not isinstance(t, (int, float)):
+            raise BonusSchemeError('Threshold must be a number.')
+        if not math.isfinite(t):
+            raise BonusSchemeError('Threshold must be a finite number.')
+        if abs(round(t, 2) - t) >= _EPS:
+            raise BonusSchemeError(
+                'Threshold can have at most 2 decimal places.'
+            )
+        if t < 0:
+            raise BonusSchemeError('Threshold must be non-negative.')
+        if scheme_type == 'percentage' and t > 100:
+            raise BonusSchemeError(
+                'Percentage threshold must be at most 100.'
+            )
+
+        rounded_t = round(float(t), 2)
+        if abs(rounded_t - int(rounded_t)) < _EPS:
+            stored_t = int(rounded_t)
+        else:
+            stored_t = rounded_t
+
+        if stored_t in seen_thresholds:
+            raise BonusSchemeError(f'Duplicate threshold: {stored_t}')
+        seen_thresholds.add(stored_t)
+
+        b = entry['bonus']
+        if isinstance(b, bool) or not isinstance(b, (int, float)):
+            raise BonusSchemeError('Bonus points must be a number.')
+        if isinstance(b, float):
+            if not math.isfinite(b) or not b.is_integer():
+                raise BonusSchemeError('Bonus points must be whole numbers.')
+        if b < 0:
+            raise BonusSchemeError('Bonus points must be non-negative.')
+
+        stored_b = int(b)
+
+        normalized_entries.append({'threshold': stored_t, 'bonus': stored_b})
+
+    normalized_entries.sort(key=lambda e: e['threshold'], reverse=True)
+
+    return {
+        'scheme_type': scheme_type,
+        'student_visibility': student_visibility,
+        'entries': normalized_entries,
+    }
+
+
+def is_bonus_scheme_active(scheme: Optional[Dict]) -> bool:
+    return (
+        scheme is not None
+        and scheme.get('scheme_type') != 'none'
+        and len(scheme.get('entries', [])) > 0
+    )
+
+
+def compute_bonus(
+    scheme: Optional[Dict], total_points: float, percentage: float
+) -> Optional[int]:
+    if not is_bonus_scheme_active(scheme):
+        return None
+    value = (
+        percentage if scheme['scheme_type'] == 'percentage' else total_points
+    )
+    value = _clean_round(value or 0.0)
+    matches = [
+        e['bonus'] for e in scheme['entries'] if value + _EPS >= e['threshold']
+    ]
+    return max(matches) if matches else 0
+
+
+def build_student_bonus_view(
+    scheme: Optional[Dict],
+    total_points: float,
+    percentage: float,
+    viewer_is_instructor: bool,
+) -> Optional[Dict]:
+    if not is_bonus_scheme_active(scheme):
+        return None
+    visibility = (
+        'full' if viewer_is_instructor else scheme['student_visibility']
+    )
+    if visibility == 'hidden':
+        return None
+    return {
+        'scheme_type': scheme['scheme_type'],
+        'visibility': visibility,
+        'entries': scheme['entries'],
+        'bonus_points': (
+            compute_bonus(scheme, total_points, percentage)
+            if visibility == 'full'
+            else None
+        ),
+    }
+
 
 
