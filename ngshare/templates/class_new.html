@@ -32,8 +32,25 @@
 
         <div class="form-group">
             <label for="class-instructors">Instructors *</label>
-            <input type="text" class="form-control" id="class-instructors" required placeholder="e.g. alice, bob">
-            <div class="field-hint">Comma- or space-separated list of instructor usernames. At least one required.</div>
+            {% if existing_users %}
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                <select class="form-control" id="instructor-dropdown" aria-label="Select existing user to add as instructor" style="flex: 1;">
+                    <option value="">-- Select an existing user to add --</option>
+                    {% for u in existing_users %}
+                    <option value="{{ u['id'] }}">{{ u['display'] }}</option>
+                    {% end %}
+                </select>
+                <button type="button" class="btn btn-default" id="btn-add-instructor" onclick="addInstructorFromDropdown()" title="Add selected user to instructors list">
+                    + Add
+                </button>
+            </div>
+            {% end %}
+            <div class="autocomplete-container">
+                <input type="text" class="form-control" id="class-instructors" required
+                    placeholder="e.g. alice, bob" autocomplete="off">
+                <div id="instructor-suggestions" class="autocomplete-suggestions" style="display: none;"></div>
+            </div>
+            <div class="field-hint">Select a user from the dropdown or type to search existing users. Multiple instructors can be separated by commas.</div>
         </div>
 
         <div class="form-group" style="margin-bottom: 0;">
@@ -56,7 +73,7 @@
 
         <div class="form-group">
             <label for="git-url">Repository URL</label>
-            <input type="url" class="form-control" id="git-url" placeholder="https://github.com/org/repo.git">
+            <input type="url" class="form-control" id="git-url" placeholder="e.g. https://github.com/org/repo.git">
             <div class="field-hint">Must use HTTPS. Userinfo (passwords in URL) and queries are rejected.</div>
         </div>
 
@@ -105,11 +122,11 @@
                 </div>
                 <div class="form-group">
                     <label for="res-{{ role }}-mem-limit">Memory Limit</label>
-                    <input type="text" class="form-control" id="res-{{ role }}-mem-limit" placeholder="e.g. 2G">
+                    <input type="text" class="form-control" id="res-{{ role }}-mem-limit" placeholder="Inherit global">
                 </div>
                 <div class="form-group" style="margin-bottom: 0;">
                     <label for="res-{{ role }}-mem-guar">Memory Guarantee</label>
-                    <input type="text" class="form-control" id="res-{{ role }}-mem-guar" placeholder="e.g. 1G">
+                    <input type="text" class="form-control" id="res-{{ role }}-mem-guar" placeholder="Inherit global">
                 </div>
             </div>
             {% end %}
@@ -214,6 +231,187 @@
             btn.disabled = false;
             btn.innerText = 'Create Class';
         }
+    }
+
+    const existingUsers = {% raw json_encode(existing_users if existing_users else []) %};
+
+    function addInstructor(username) {
+        if (!username) return;
+        const input = document.getElementById('class-instructors');
+        const existing = input.value.split(/[\s,]+/).map(u => u.trim()).filter(Boolean);
+        if (!existing.includes(username)) {
+            existing.push(username);
+            input.value = existing.join(', ');
+        }
+        input.focus();
+        hideSuggestions();
+    }
+
+    function addInstructorFromDropdown() {
+        const sel = document.getElementById('instructor-dropdown');
+        if (!sel || !sel.value) return;
+        addInstructor(sel.value);
+        sel.value = '';
+    }
+
+    const dropdown = document.getElementById('instructor-dropdown');
+    if (dropdown) {
+        dropdown.addEventListener('change', function() {
+            if (this.value) {
+                addInstructor(this.value);
+                this.value = '';
+            }
+        });
+    }
+
+    // Autocomplete / As-you-type assistance
+    const instInput = document.getElementById('class-instructors');
+    const suggBox = document.getElementById('instructor-suggestions');
+    let activeIndex = -1;
+
+    function hideSuggestions() {
+        if (suggBox) {
+            suggBox.style.display = 'none';
+            suggBox.innerHTML = '';
+            activeIndex = -1;
+        }
+    }
+
+    function getCurrentTokenInfo() {
+        const val = instInput.value;
+        const cursorPos = instInput.selectionStart ?? val.length;
+        const textBefore = val.slice(0, cursorPos);
+        const lastCommaIdx = textBefore.lastIndexOf(',');
+        const tokenStart = lastCommaIdx === -1 ? 0 : lastCommaIdx + 1;
+        const rawToken = textBefore.slice(tokenStart);
+        const query = rawToken.trim().toLowerCase();
+        return {
+            val: val,
+            cursorPos: cursorPos,
+            tokenStart: tokenStart,
+            query: query,
+            beforeToken: val.slice(0, tokenStart),
+            afterCursor: val.slice(cursorPos)
+        };
+    }
+
+    function updateSuggestions() {
+        if (!suggBox || !existingUsers.length) return;
+        const info = getCurrentTokenInfo();
+        if (!info.query) {
+            hideSuggestions();
+            return;
+        }
+
+        const matches = existingUsers.filter(u => {
+            const idMatch = u.id.toLowerCase().includes(info.query);
+            const nameMatch = (u.name || '').toLowerCase().includes(info.query);
+            const dispMatch = (u.display || '').toLowerCase().includes(info.query);
+            return (idMatch || nameMatch || dispMatch);
+        });
+
+        if (matches.length === 0) {
+            hideSuggestions();
+            return;
+        }
+
+        suggBox.innerHTML = '';
+        matches.slice(0, 10).forEach((u, idx) => {
+            const item = document.createElement('div');
+            item.className = 'autocomplete-item';
+            item.dataset.index = idx;
+            item.dataset.userId = u.id;
+            
+            const nameSpan = document.createElement('span');
+            nameSpan.textContent = u.name ? `${u.name}` : u.id;
+            item.appendChild(nameSpan);
+
+            const idSpan = document.createElement('span');
+            idSpan.className = 'autocomplete-item-id';
+            idSpan.textContent = `(${u.id})`;
+            item.appendChild(idSpan);
+
+            item.addEventListener('mousedown', function(e) {
+                e.preventDefault();
+                selectSuggestion(u.id);
+            });
+
+            suggBox.appendChild(item);
+        });
+
+        suggBox.style.display = 'block';
+        activeIndex = -1;
+    }
+
+    function selectSuggestion(userId) {
+        const info = getCurrentTokenInfo();
+        const before = info.beforeToken;
+        const after = info.afterCursor;
+        let prefix = before;
+        if (prefix && !prefix.endsWith(' ') && !prefix.endsWith(',')) {
+            prefix += ', ';
+        } else if (prefix.endsWith(',') && !prefix.endsWith(', ')) {
+            prefix += ' ';
+        }
+        
+        let afterClean = after.replace(/^[^\s,]+/, '');
+        if (afterClean.startsWith(',')) {
+            afterClean = afterClean.slice(1).trimStart();
+        }
+        
+        const existingUsersList = (prefix + userId).split(/[\s,]+/).map(u => u.trim()).filter(Boolean);
+        const unique = Array.from(new Set(existingUsersList));
+        if (afterClean.trim()) {
+            afterClean.split(/[\s,]+/).map(u => u.trim()).filter(Boolean).forEach(u => {
+                if (!unique.includes(u)) unique.push(u);
+            });
+        }
+
+        instInput.value = unique.join(', ');
+        instInput.focus();
+        hideSuggestions();
+    }
+
+    if (instInput && suggBox) {
+        instInput.addEventListener('input', updateSuggestions);
+
+        instInput.addEventListener('keydown', function(e) {
+            if (suggBox.style.display === 'none') return;
+            const items = suggBox.querySelectorAll('.autocomplete-item');
+            if (!items.length) return;
+
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                activeIndex = (activeIndex + 1) % items.length;
+                updateActiveItem(items);
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                activeIndex = (activeIndex - 1 + items.length) % items.length;
+                updateActiveItem(items);
+            } else if (e.key === 'Enter') {
+                if (activeIndex >= 0 && activeIndex < items.length) {
+                    e.preventDefault();
+                    selectSuggestion(items[activeIndex].dataset.userId);
+                }
+            } else if (e.key === 'Escape') {
+                hideSuggestions();
+            }
+        });
+
+        instInput.addEventListener('blur', function() {
+            setTimeout(hideSuggestions, 150);
+        });
+    }
+
+    function updateActiveItem(items) {
+        items.forEach((it, idx) => {
+            if (idx === activeIndex) {
+                it.classList.add('active');
+                it.scrollIntoView({ block: 'nearest' });
+            } else {
+                it.classList.remove('active');
+            }
+        });
     }
 </script>
 {% end %}

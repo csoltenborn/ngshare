@@ -7,6 +7,8 @@ from tornado.web import authenticated
 from .database.database import (
     Course,
     User,
+    InstructorAssociation,
+    StudentAssociation,
     CourseSettings,
     GlobalSetting,
     SettingsAudit,
@@ -75,6 +77,72 @@ def get_allowed_git_hosts_from_db(db) -> list[str]:
     return []
 
 
+SYSTEM_USERS = {'hub'}
+
+
+def get_existing_users(db) -> list[dict[str, str]]:
+    users = db.query(User).filter(~User.id.in_(SYSTEM_USERS)).order_by(User.id.asc()).all()
+    user_names: dict[str, tuple[str, str]] = {}
+
+    inst_assocs = (
+        db.query(InstructorAssociation)
+        .filter(
+            (InstructorAssociation.first_name.isnot(None))
+            | (InstructorAssociation.last_name.isnot(None))
+        )
+        .all()
+    )
+    for a in inst_assocs:
+        fn = (a.first_name or "").strip()
+        ln = (a.last_name or "").strip()
+        if fn or ln:
+            user_names[a.left_id] = (fn, ln)
+
+    stud_assocs = (
+        db.query(StudentAssociation)
+        .filter(
+            (StudentAssociation.first_name.isnot(None))
+            | (StudentAssociation.last_name.isnot(None))
+        )
+        .all()
+    )
+    for a in stud_assocs:
+        if a.left_id not in user_names:
+            fn = (a.first_name or "").strip()
+            ln = (a.last_name or "").strip()
+            if fn or ln:
+                user_names[a.left_id] = (fn, ln)
+
+    result = []
+    for u in users:
+        fn, ln = user_names.get(u.id, ("", ""))
+        if fn and ln:
+            full_name = f"{fn} {ln}"
+        elif fn or ln:
+            full_name = fn or ln
+        elif "." in u.id:
+            parts = [p.capitalize() for p in u.id.split(".") if p]
+            full_name = " ".join(parts)
+        elif "_" in u.id:
+            parts = [p.capitalize() for p in u.id.split("_") if p]
+            full_name = " ".join(parts)
+        else:
+            full_name = ""
+
+        if full_name and full_name.lower() != u.id.lower():
+            display = f"{full_name} ({u.id})"
+        else:
+            display = u.id
+
+        result.append({
+            "id": u.id,
+            "name": full_name,
+            "display": display,
+        })
+    result.sort(key=lambda x: x["display"].lower())
+    return result
+
+
 def build_class_view(course: Course, handler: MyRequestHandler) -> dict:
     cs: CourseSettings | None = course.settings
     service_token = handler.settings.get('api_token')
@@ -86,8 +154,12 @@ def build_class_view(course: Course, handler: MyRequestHandler) -> dict:
         display_name = cs.display_name
         enabled = bool(cs.enabled)
         git_url = cs.git_url
-        git_branch = cs.git_branch or 'main'
-        git_username = cs.git_username or 'x-access-token'
+        if git_url:
+            git_branch = cs.git_branch or 'main'
+            git_username = cs.git_username or 'x-access-token'
+        else:
+            git_branch = None
+            git_username = None
         has_token = bool(cs.git_token_enc)
         token_status = get_token_status(cs.git_token_enc, key_material=service_token)
         try:
@@ -98,8 +170,8 @@ def build_class_view(course: Course, handler: MyRequestHandler) -> dict:
         display_name = None
         enabled = True
         git_url = None
-        git_branch = 'main'
-        git_username = 'x-access-token'
+        git_branch = None
+        git_username = None
         has_token = False
         token_status = 'none'
         resource_limits = {}
@@ -440,61 +512,78 @@ class ClassHandler(MyRequestHandler):
         # Check git settings
         if 'git' in cleaned:
             git_data = cleaned['git']
-            old_url = cs.git_url
-            new_url = git_data.get('url', old_url)
-
-            # Check if url changed host
-            url_host_changed = False
-            if 'url' in git_data:
-                cs.git_url = git_data['url']
-                changes['git.url'] = {'before': old_url, 'after': git_data['url']}
-                if old_url and git_data['url']:
-                    old_host = urllib.parse.urlsplit(old_url).netloc.lower()
-                    new_host = urllib.parse.urlsplit(git_data['url']).netloc.lower()
-                    if old_host != new_host:
-                        url_host_changed = True
-
-            if 'branch' in git_data:
-                changes['git.branch'] = {'before': cs.git_branch, 'after': git_data['branch']}
-                cs.git_branch = git_data['branch']
-
-            if 'username' in git_data:
-                changes['git.username'] = {'before': cs.git_username, 'after': git_data['username']}
-                cs.git_username = git_data['username']
-
-            # Token rules
-            if 'token' in git_data:
-                token_val = git_data['token']
-                if token_val == '':  # clear
-                    cs.git_token_enc = None
+            if git_data is None:
+                if cs.git_url is not None:
+                    changes['git.url'] = {'before': cs.git_url, 'after': None}
+                    cs.git_url = None
+                if cs.git_branch is not None:
+                    changes['git.branch'] = {'before': cs.git_branch, 'after': None}
+                    cs.git_branch = None
+                if cs.git_username is not None:
+                    changes['git.username'] = {'before': cs.git_username, 'after': None}
+                    cs.git_username = None
+                if cs.git_token_enc is not None:
                     changes['git.token'] = "<cleared>"
+                    cs.git_token_enc = None
                     if action == "update":
                         action = "clear_token"
-                else:  # set
-                    cs.git_token_enc = encrypt(token_val, key_material=service_token)
-                    changes['git.token'] = "<set>"
+            else:
+                old_url = cs.git_url
+                new_url = git_data.get('url', old_url)
+
+                # Check if url changed host
+                url_host_changed = False
+                if 'url' in git_data:
+                    cs.git_url = git_data['url']
+                    changes['git.url'] = {'before': old_url, 'after': git_data['url']}
+                    if old_url and git_data['url']:
+                        old_host = urllib.parse.urlsplit(old_url).netloc.lower()
+                        new_host = urllib.parse.urlsplit(git_data['url']).netloc.lower()
+                        if old_host != new_host:
+                            url_host_changed = True
+
+                if 'branch' in git_data:
+                    changes['git.branch'] = {'before': cs.git_branch, 'after': git_data['branch']}
+                    cs.git_branch = git_data['branch']
+
+                if 'username' in git_data:
+                    changes['git.username'] = {'before': cs.git_username, 'after': git_data['username']}
+                    cs.git_username = git_data['username']
+
+                # Token rules
+                if 'token' in git_data:
+                    token_val = git_data['token']
+                    if token_val == '':  # clear
+                        cs.git_token_enc = None
+                        changes['git.token'] = "<cleared>"
+                        if action == "update":
+                            action = "clear_token"
+                    else:  # set
+                        cs.git_token_enc = encrypt(token_val, key_material=service_token)
+                        changes['git.token'] = "<set>"
+                        if action == "update":
+                            action = "set_token"
+                elif url_host_changed and cs.git_token_enc is not None:
+                    # Url host changed without new token -> clear token automatically
+                    cs.git_token_enc = None
+                    token_cleared = True
+                    changes['git.token'] = "<cleared_due_to_host_change>"
                     if action == "update":
-                        action = "set_token"
-            elif url_host_changed and cs.git_token_enc is not None:
-                # Url host changed without new token -> clear token automatically
-                cs.git_token_enc = None
-                token_cleared = True
-                changes['git.token'] = "<cleared_due_to_host_change>"
-                if action == "update":
-                    action = "clear_token"
+                        action = "clear_token"
 
         cs.updated_at = now
         cs.updated_by = actor
 
-        audit = SettingsAudit(
-            actor=actor,
-            scope="class",
-            course_id=course.id,
-            action=action,
-            changes_json=json.dumps(changes),
-            timestamp=now,
-        )
-        self.db.add(audit)
+        if changes:
+            audit = SettingsAudit(
+                actor=actor,
+                scope="class",
+                course_id=course.id,
+                action=action,
+                changes_json=json.dumps(changes),
+                timestamp=now,
+            )
+            self.db.add(audit)
         self.db.commit()
 
         resp = build_class_view(course, self)
@@ -614,6 +703,18 @@ class SettingsAuditHandler(MyRequestHandler):
         self.json_success(audit=[a.dump() for a in entries])
 
 
+class UsersHandler(MyRequestHandler):
+    '/services/ngshare/users'
+
+    @authenticated
+    def get(self):
+        if not is_admin_caller(self):
+            self.json_error(403, "Permission denied")
+
+        users = get_existing_users(self.db)
+        self.json_success(users=users)
+
+
 def get_ui_template_namespace(handler):
     prefix = getattr(handler.application, 'prefix', '/services/ngshare/')
     if not prefix.endswith('/'):
@@ -724,10 +825,12 @@ class UIClassNewHandler(MyRequestHandler):
             )
             return
 
+        existing_users = get_existing_users(self.db)
         allowed_hosts = get_allowed_git_hosts_from_db(self.db)
         ns = get_ui_template_namespace(self)
         ns.update({
             'allowed_git_hosts': allowed_hosts,
+            'existing_users': existing_users,
         })
         self.render('templates/class_new.html', **ns)
 
@@ -770,6 +873,7 @@ class UIClassEditHandler(MyRequestHandler):
             )
             audit_list = [a.dump() for a in audits]
 
+        existing_users = get_existing_users(self.db) if is_adm else []
         allowed_hosts = get_allowed_git_hosts_from_db(self.db)
         ns = get_ui_template_namespace(self)
         ns.update({
@@ -777,6 +881,7 @@ class UIClassEditHandler(MyRequestHandler):
             'is_instructor': is_inst,
             'audit': audit_list,
             'allowed_git_hosts': allowed_hosts,
+            'existing_users': existing_users,
         })
         self.render('templates/class_edit.html', **ns)
 

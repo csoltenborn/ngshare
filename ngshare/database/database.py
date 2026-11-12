@@ -150,6 +150,7 @@ class Course(Base):
         for counted in self.counted_assignments[:]:
             db.delete(counted)
         db.query(BonusScheme).filter(BonusScheme.course_id == self._id).delete()
+        db.query(SettingsAudit).filter(SettingsAudit.course_id == self.id).delete()
         if self.settings:
             db.delete(self.settings)
         for student in self.students[:]:
@@ -515,6 +516,10 @@ class SettingsAudit(Base):
         )
 
     def dump(self):
+        try:
+            parsed_changes = json.loads(self.changes_json) if self.changes_json else {}
+        except Exception:
+            parsed_changes = {}
         return {
             '_id': self._id,
             'timestamp': (
@@ -526,6 +531,7 @@ class SettingsAudit(Base):
             'scope': self.scope,
             'course_id': self.course_id,
             'action': self.action,
+            'changes': parsed_changes,
             'changes_json': self.changes_json,
         }
 

@@ -56,11 +56,28 @@
 
         <div class="form-group" style="margin-bottom: 0;">
             <label for="class-instructors">Instructors</label>
-            <input type="text" class="form-control" id="class-instructors"
-                value="{{ ', '.join(cls.get('instructors', [])) }}" {% if not perms.get('edit_instructors') %}disabled{% end %}>
+            {% if perms.get('edit_instructors') and existing_users %}
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                <select class="form-control" id="instructor-dropdown" aria-label="Select existing user to add as instructor" style="flex: 1;">
+                    <option value="">-- Select an existing user to add --</option>
+                    {% for u in existing_users %}
+                    <option value="{{ u['id'] }}">{{ u['display'] }}</option>
+                    {% end %}
+                </select>
+                <button type="button" class="btn btn-default" id="btn-add-instructor" onclick="addInstructorFromDropdown()" title="Add selected user to instructors list">
+                    + Add
+                </button>
+            </div>
+            {% end %}
+            <div class="autocomplete-container">
+                <input type="text" class="form-control" id="class-instructors"
+                    value="{{ ', '.join(cls.get('instructors', [])) }}" {% if not perms.get('edit_instructors') %}disabled{% end %}
+                    autocomplete="off">
+                <div id="instructor-suggestions" class="autocomplete-suggestions" style="display: none;"></div>
+            </div>
             <div class="field-hint">
                 {% if perms.get('edit_instructors') %}
-                Comma- or space-separated list of instructor usernames.
+                Select a user from the dropdown or type to search existing users. Multiple instructors can be separated by commas.
                 {% else %}
                 Only administrators can modify the instructor list.
                 {% end %}
@@ -69,7 +86,14 @@
     </div>
 
     <div class="card">
-        <h3 class="card-header-title">Course Materials Repository (Git)</h3>
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+            <h3 class="card-header-title" style="margin: 0;">Course Materials Repository (Git)</h3>
+            {% if git_cfg.get('url') %}
+            <span class="badge-active" style="font-size: 0.8rem;">Configured</span>
+            {% else %}
+            <span style="color: #94a3b8; font-size: 0.85rem; font-style: italic;">No repository configured</span>
+            {% end %}
+        </div>
         <p class="field-hint" style="margin-bottom: 16px;">
             Material repository cloned into user pods when this course is selected.
             {% if allowed_git_hosts %}
@@ -80,7 +104,7 @@
         <div class="form-group">
             <label for="git-url">Repository URL</label>
             <input type="url" class="form-control" id="git-url" value="{{ git_cfg.get('url') or '' }}"
-                placeholder="https://github.com/org/repo.git">
+                placeholder="e.g. https://github.com/org/repo.git">
             <div class="field-hint">Must use HTTPS. Userinfo and queries are rejected. Changing host without a new token
                 clears the existing token.</div>
         </div>
@@ -88,13 +112,13 @@
         <div class="grid-3">
             <div class="form-group">
                 <label for="git-branch">Branch</label>
-                <input type="text" class="form-control" id="git-branch" value="{{ git_cfg.get('branch', 'main') }}"
+                <input type="text" class="form-control" id="git-branch" value="{{ git_cfg.get('branch') or '' }}"
                     placeholder="main">
             </div>
             <div class="form-group">
                 <label for="git-username">Username</label>
                 <input type="text" class="form-control" id="git-username"
-                    value="{{ git_cfg.get('username', 'x-access-token') }}" placeholder="x-access-token">
+                    value="{{ git_cfg.get('username') or '' }}" placeholder="x-access-token">
             </div>
             <div class="form-group">
                 <label for="git-token">Personal Access Token (PAT)</label>
@@ -158,13 +182,13 @@
                     <label for="res-{{ role }}-mem-limit">Memory Limit</label>
                     <input type="text" class="form-control" id="res-{{ role }}-mem-limit"
                         value="{{ mem_cfg.get('limit') if mem_cfg.get('limit') is not None else '' }}"
-                        placeholder="e.g. 2G" {% if not perms.get('edit_limits') %}disabled{% end %}>
+                        placeholder="Inherit global" {% if not perms.get('edit_limits') %}disabled{% end %}>
                 </div>
                 <div class="form-group" style="margin-bottom: 0;">
                     <label for="res-{{ role }}-mem-guar">Memory Guarantee</label>
                     <input type="text" class="form-control" id="res-{{ role }}-mem-guar"
                         value="{{ mem_cfg.get('guarantee') if mem_cfg.get('guarantee') is not None else '' }}"
-                        placeholder="e.g. 1G" {% if not perms.get('edit_limits') %}disabled{% end %}>
+                        placeholder="Inherit global" {% if not perms.get('edit_limits') %}disabled{% end %}>
                 </div>
             </div>
             {% end %}
@@ -202,11 +226,9 @@
                             {% end %}
                         </td>
                         <td>
-                            <code
-                                style="white-space: pre-wrap; font-size: 0.8rem; background: #f1f5f9; padding: 2px 4px; border-radius: 4px;">
-                                {% import json %}
-                                {{ json.dumps(a.get('changes', {})) }}
-                            </code>
+                            {% import json %}
+                            {% set ch = a.get('changes') if a.get('changes') is not None else (json.loads(a.get('changes_json', '{}')) if a.get('changes_json') else {}) %}
+                            <code style="white-space: pre-wrap; font-size: 0.8rem; background: #f1f5f9; padding: 2px 4px; border-radius: 4px;">{{ json.dumps(ch, indent=2) }}</code>
                         </td>
                     </tr>
                     {% end %}
@@ -258,11 +280,14 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ enabled: newStatus })
             });
-            const data = await resp.json();
-            if (resp.ok && data.success) {
+            let data = null;
+            try {
+                data = await resp.json();
+            } catch (jsonErr) {}
+            if (resp.ok && data && data.success) {
                 window.location.reload();
             } else {
-                showAlert('danger', data.message || 'Failed to update class status.');
+                showAlert('danger', (data && data.message) || `Failed to update class status (${resp.status}).`);
             }
         } catch (err) {
             showAlert('danger', 'Error updating class status: ' + err.message);
@@ -341,15 +366,18 @@
                 body: JSON.stringify(payload)
             });
 
-            const data = await resp.json();
-            if (resp.ok && data.success) {
+            let data = null;
+            try {
+                data = await resp.json();
+            } catch (jsonErr) {}
+            if (resp.ok && data && data.success) {
                 showAlert('success', 'Class updated successfully.');
                 if (data.token_cleared) {
                     showAlert('info', 'Note: Git host changed; stored token was cleared for security.');
                 }
                 setTimeout(() => window.location.reload(), 800);
             } else {
-                showAlert('danger', data.message || 'Failed to update class.');
+                showAlert('danger', (data && data.message) || `Failed to update class (${resp.status}).`);
             }
         } catch (err) {
             showAlert('danger', 'Error updating class: ' + err.message);
@@ -357,6 +385,187 @@
             btn.disabled = false;
             btn.innerText = 'Save Changes';
         }
+    }
+
+    const existingUsers = {% raw json_encode(existing_users if existing_users else []) %};
+
+    function addInstructor(username) {
+        if (!username) return;
+        const input = document.getElementById('class-instructors');
+        const existing = input.value.split(/[\s,]+/).map(u => u.trim()).filter(Boolean);
+        if (!existing.includes(username)) {
+            existing.push(username);
+            input.value = existing.join(', ');
+        }
+        input.focus();
+        hideSuggestions();
+    }
+
+    function addInstructorFromDropdown() {
+        const sel = document.getElementById('instructor-dropdown');
+        if (!sel || !sel.value) return;
+        addInstructor(sel.value);
+        sel.value = '';
+    }
+
+    const dropdown = document.getElementById('instructor-dropdown');
+    if (dropdown) {
+        dropdown.addEventListener('change', function() {
+            if (this.value) {
+                addInstructor(this.value);
+                this.value = '';
+            }
+        });
+    }
+
+    // Autocomplete / As-you-type assistance
+    const instInput = document.getElementById('class-instructors');
+    const suggBox = document.getElementById('instructor-suggestions');
+    let activeIndex = -1;
+
+    function hideSuggestions() {
+        if (suggBox) {
+            suggBox.style.display = 'none';
+            suggBox.innerHTML = '';
+            activeIndex = -1;
+        }
+    }
+
+    function getCurrentTokenInfo() {
+        const val = instInput.value;
+        const cursorPos = instInput.selectionStart ?? val.length;
+        const textBefore = val.slice(0, cursorPos);
+        const lastCommaIdx = textBefore.lastIndexOf(',');
+        const tokenStart = lastCommaIdx === -1 ? 0 : lastCommaIdx + 1;
+        const rawToken = textBefore.slice(tokenStart);
+        const query = rawToken.trim().toLowerCase();
+        return {
+            val: val,
+            cursorPos: cursorPos,
+            tokenStart: tokenStart,
+            query: query,
+            beforeToken: val.slice(0, tokenStart),
+            afterCursor: val.slice(cursorPos)
+        };
+    }
+
+    function updateSuggestions() {
+        if (!suggBox || !existingUsers.length || !canEditInstructors) return;
+        const info = getCurrentTokenInfo();
+        if (!info.query) {
+            hideSuggestions();
+            return;
+        }
+
+        const matches = existingUsers.filter(u => {
+            const idMatch = u.id.toLowerCase().includes(info.query);
+            const nameMatch = (u.name || '').toLowerCase().includes(info.query);
+            const dispMatch = (u.display || '').toLowerCase().includes(info.query);
+            return (idMatch || nameMatch || dispMatch);
+        });
+
+        if (matches.length === 0) {
+            hideSuggestions();
+            return;
+        }
+
+        suggBox.innerHTML = '';
+        matches.slice(0, 10).forEach((u, idx) => {
+            const item = document.createElement('div');
+            item.className = 'autocomplete-item';
+            item.dataset.index = idx;
+            item.dataset.userId = u.id;
+            
+            const nameSpan = document.createElement('span');
+            nameSpan.textContent = u.name ? `${u.name}` : u.id;
+            item.appendChild(nameSpan);
+
+            const idSpan = document.createElement('span');
+            idSpan.className = 'autocomplete-item-id';
+            idSpan.textContent = `(${u.id})`;
+            item.appendChild(idSpan);
+
+            item.addEventListener('mousedown', function(e) {
+                e.preventDefault();
+                selectSuggestion(u.id);
+            });
+
+            suggBox.appendChild(item);
+        });
+
+        suggBox.style.display = 'block';
+        activeIndex = -1;
+    }
+
+    function selectSuggestion(userId) {
+        const info = getCurrentTokenInfo();
+        const before = info.beforeToken;
+        const after = info.afterCursor;
+        let prefix = before;
+        if (prefix && !prefix.endsWith(' ') && !prefix.endsWith(',')) {
+            prefix += ', ';
+        } else if (prefix.endsWith(',') && !prefix.endsWith(', ')) {
+            prefix += ' ';
+        }
+        
+        let afterClean = after.replace(/^[^\s,]+/, '');
+        if (afterClean.startsWith(',')) {
+            afterClean = afterClean.slice(1).trimStart();
+        }
+        
+        const existingUsersList = (prefix + userId).split(/[\s,]+/).map(u => u.trim()).filter(Boolean);
+        const unique = Array.from(new Set(existingUsersList));
+        if (afterClean.trim()) {
+            afterClean.split(/[\s,]+/).map(u => u.trim()).filter(Boolean).forEach(u => {
+                if (!unique.includes(u)) unique.push(u);
+            });
+        }
+
+        instInput.value = unique.join(', ');
+        instInput.focus();
+        hideSuggestions();
+    }
+
+    if (instInput && suggBox && canEditInstructors) {
+        instInput.addEventListener('input', updateSuggestions);
+
+        instInput.addEventListener('keydown', function(e) {
+            if (suggBox.style.display === 'none') return;
+            const items = suggBox.querySelectorAll('.autocomplete-item');
+            if (!items.length) return;
+
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                activeIndex = (activeIndex + 1) % items.length;
+                updateActiveItem(items);
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                activeIndex = (activeIndex - 1 + items.length) % items.length;
+                updateActiveItem(items);
+            } else if (e.key === 'Enter') {
+                if (activeIndex >= 0 && activeIndex < items.length) {
+                    e.preventDefault();
+                    selectSuggestion(items[activeIndex].dataset.userId);
+                }
+            } else if (e.key === 'Escape') {
+                hideSuggestions();
+            }
+        });
+
+        instInput.addEventListener('blur', function() {
+            setTimeout(hideSuggestions, 150);
+        });
+    }
+
+    function updateActiveItem(items) {
+        items.forEach((it, idx) => {
+            if (idx === activeIndex) {
+                it.classList.add('active');
+                it.scrollIntoView({ block: 'nearest' });
+            } else {
+                it.classList.remove('active');
+            }
+        });
     }
 </script>
 {% end %}

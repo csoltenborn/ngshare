@@ -1290,6 +1290,7 @@ try:
         UIClassesHandler,
         UIClassNewHandler,
         UIClassEditHandler,
+        UsersHandler,
     )
 except ImportError:
     from settings_handlers import (
@@ -1303,6 +1304,7 @@ except ImportError:
         UIClassesHandler,
         UIClassNewHandler,
         UIClassEditHandler,
+        UsersHandler,
     )
 
 try:
@@ -1371,6 +1373,7 @@ class MyApplication(Application):
             (prefix + 'settings/global', GlobalSettingsHandler),
             (prefix + 'classes', ClassesHandler),
             (prefix + 'classes/([^/]+)', ClassHandler),
+            (prefix + 'users', UsersHandler),
             (prefix + 'settings/audit', SettingsAuditHandler),
             (prefix + 'ui/settings', UISettingsHandler),
             (prefix + 'ui/classes/new', UIClassNewHandler),
