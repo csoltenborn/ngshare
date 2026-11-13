@@ -135,7 +135,8 @@
                 method: 'PUT',
                 credentials: 'same-origin',
                 headers: {
-                    'Content-Type': 'application/json'
+                    'Content-Type': 'application/json',
+                    'X-XSRFToken': getXsrfToken()
                 },
                 body: JSON.stringify(payload)
             });

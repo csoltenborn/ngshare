@@ -28,9 +28,13 @@ def derive_fernet_key(service_token: str | bytes) -> bytes:
 
 def get_fernet(key_material: str | bytes | None = None) -> Fernet:
     if key_material is None:
-        key_material = os.environ.get('JUPYTERHUB_API_TOKEN', '')
+        key_material = os.environ.get('NGSHARE_SECRET_KEY') or os.environ.get(
+            'JUPYTERHUB_API_TOKEN', ''
+        )
     if not key_material:
-        key_material = 'default-insecure-key'
+        raise RuntimeError(
+            'Encryption key material not configured: set NGSHARE_SECRET_KEY or JUPYTERHUB_API_TOKEN'
+        )
     key = derive_fernet_key(key_material)
     return Fernet(key)
 
@@ -45,12 +49,12 @@ def encrypt(plaintext: str | None, key_material: str | bytes | None = None) -> s
 def decrypt(ciphertext: str | None, key_material: str | bytes | None = None) -> str | None:
     if not ciphertext:
         return None
+    f = get_fernet(key_material)
     try:
-        f = get_fernet(key_material)
         return f.decrypt(ciphertext.encode('utf-8')).decode('utf-8')
     except (InvalidToken, Exception):
         logger.warning(
-            "Failed to decrypt git token (possibly rotated JUPYTERHUB_API_TOKEN or invalid key)"
+            "Failed to decrypt git token (possibly rotated key or invalid ciphertext)"
         )
         return None
 

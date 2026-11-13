@@ -1,6 +1,7 @@
 import datetime
 import json
 import logging
+import os
 import urllib.parse
 from tornado.web import authenticated
 
@@ -51,6 +52,10 @@ def parse_json_body(handler: MyRequestHandler) -> dict:
 def is_service(handler: MyRequestHandler) -> bool:
     service_token = handler.settings.get('api_token')
     return bool(handler.auth_token and service_token and handler.auth_token == service_token)
+
+
+def get_encryption_key_material(handler: MyRequestHandler) -> str | None:
+    return os.environ.get('NGSHARE_SECRET_KEY') or handler.settings.get('api_token')
 
 
 def is_admin_caller(handler: MyRequestHandler) -> bool:
@@ -145,7 +150,7 @@ def get_existing_users(db) -> list[dict[str, str]]:
 
 def build_class_view(course: Course, handler: MyRequestHandler) -> dict:
     cs: CourseSettings | None = course.settings
-    service_token = handler.settings.get('api_token')
+    key_material = get_encryption_key_material(handler)
 
     is_adm = is_admin_caller(handler)
     is_inst = bool(handler.user and course in handler.user.teaching)
@@ -161,7 +166,7 @@ def build_class_view(course: Course, handler: MyRequestHandler) -> dict:
             git_branch = None
             git_username = None
         has_token = bool(cs.git_token_enc)
-        token_status = get_token_status(cs.git_token_enc, key_material=service_token)
+        token_status = get_token_status(cs.git_token_enc, key_material=key_material)
         try:
             resource_limits = json.loads(cs.resource_limits_json) if cs.resource_limits_json else {}
         except Exception:
@@ -363,7 +368,7 @@ class ClassesHandler(MyRequestHandler):
         git_username = git_data.get('username', 'x-access-token')
         raw_token = git_data.get('token')
 
-        token_enc = encrypt(raw_token, key_material=service_token) if raw_token else None
+        token_enc = encrypt(raw_token, key_material=get_encryption_key_material(self)) if raw_token else None
 
         res_limits = cleaned.get('resource_limits')
         res_limits_json = json.dumps(res_limits) if res_limits else None
@@ -559,7 +564,7 @@ class ClassHandler(MyRequestHandler):
                         if action == "update":
                             action = "clear_token"
                     else:  # set
-                        cs.git_token_enc = encrypt(token_val, key_material=service_token)
+                        cs.git_token_enc = encrypt(token_val, key_material=get_encryption_key_material(self))
                         changes['git.token'] = "<set>"
                         if action == "update":
                             action = "set_token"
@@ -610,6 +615,11 @@ class ServiceUserClassesHandler(MyRequestHandler):
 
         result = []
         for course in all_courses:
+            roles = []
+            if course in teaching_courses:
+                roles.append("instructor")
+            if course in taking_courses:
+                roles.append("student")
             role = "instructor" if course in teaching_courses else "student"
             cs: CourseSettings | None = course.settings
             enabled = cs.enabled if cs else True
@@ -620,6 +630,7 @@ class ServiceUserClassesHandler(MyRequestHandler):
                 'id': course.id,
                 'display_name': display_name,
                 'role': role,
+                'roles': roles,
                 'enabled': enabled,
                 'has_repo': has_repo,
             })
@@ -664,7 +675,7 @@ class ServiceSpawnConfigHandler(MyRequestHandler):
                 resource_limits = {}
 
         # Plaintext token
-        token_plaintext = decrypt(cs.git_token_enc, key_material=service_token) if cs and cs.git_token_enc else None
+        token_plaintext = decrypt(cs.git_token_enc, key_material=get_encryption_key_material(self)) if cs and cs.git_token_enc else None
 
         git_dict = {
             'url': cs.git_url if cs else None,
@@ -691,7 +702,7 @@ class SettingsAuditHandler(MyRequestHandler):
 
         course_id = self.get_argument('course_id', None)
         try:
-            limit = min(int(self.get_argument('limit', '100')), 500)
+            limit = max(1, min(int(self.get_argument('limit', '100')), 500))
         except ValueError:
             limit = 100
 

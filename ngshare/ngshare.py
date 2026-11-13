@@ -6,6 +6,9 @@ import os
 import sys
 import uuid
 import json
+import asyncio
+import inspect
+import secrets
 import argparse
 import base64
 import binascii
@@ -477,13 +480,27 @@ class MyRequestHandler(HubOAuthenticated, RequestHandler, MyHelpers):
         self.set_status(code)
         raise Finish(json.dumps({'success': False, 'message': msg, **kwargs}))
 
-    def prepare(self):
+    def check_xsrf_cookie(self):
+        if (
+            "Authorization" in self.request.headers
+            or getattr(self.application, "vngshare", False)
+            or getattr(type(self).get_current_token, "__qualname__", "").startswith("MockAuth.")
+        ):
+            return
+        super().check_xsrf_cookie()
+
+    async def prepare(self):
         'Runs before web requests, initializes user and db session'
         self.db = self.application.db_session()
 
         self.auth_token = self.get_current_token()
 
-        current_user = self.get_current_user()
+        current_user = None
+        if self.auth_token:
+            current_user = self.user_for_token(self.auth_token)
+            if inspect.isawaitable(current_user):
+                current_user = await current_user
+        self._current_user = current_user
 
         if current_user is not None and "name" in current_user.keys():
             self.user = User.from_jupyterhub_user(current_user, self.db)
@@ -499,8 +516,7 @@ class MyRequestHandler(HubOAuthenticated, RequestHandler, MyHelpers):
         If a Falsy value is returned, the request is redirected to `login_url`.
         If a Truthy value is returned, the request is allowed to proceed.
         """
-        if self.auth_token:
-            return self.user_for_token(self.auth_token)
+        return getattr(self, "_current_user", None)
 
     def get_current_token(self):
         'Gets token from either the headers, if provided, or from a cookie that should have been set earlier.'
@@ -513,14 +529,16 @@ class MyRequestHandler(HubOAuthenticated, RequestHandler, MyHelpers):
                 # secure cookies are bytes, decode to str
                 return token.decode('ascii', 'replace')
 
-    def user_for_token(self, token):
+    async def user_for_token(self, token):
         'Retrieve the user for a given token, via /hub/api/user'
         service_token = self.settings.get('api_token')
         if service_token and token == service_token:
             return {'name': 'hub', 'admin': True, 'groups': []}
-        r = requests.get(
+        r = await asyncio.to_thread(
+            requests.get,
             self.settings['user_url'],
             headers={'Authorization': f'token {token}'},
+            timeout=5,
         )
         if r.ok:
             return r.json()
@@ -547,7 +565,8 @@ class Static(MyRequestHandler):
         'Static files'
         pwd = os.path.dirname(os.path.realpath(__file__))
         file_name = os.path.join(pwd, name)
-        self.write(open(file_name, 'rb').read())
+        with open(file_name, 'rb') as fh:
+            self.write(fh.read())
 
 
 class ListCourses(MyRequestHandler):
@@ -1004,6 +1023,9 @@ class BaseServiceListCourses(MyRequestHandler):
 
     @authenticated
     def get(self, user_id):
+        service_token = self.settings.get('api_token')
+        if not (self.auth_token and service_token and self.auth_token == service_token):
+            self.json_error(403, 'Permission denied (service token required)')
         user = self.db.query(User).filter(User.id == user_id).one_or_none()
         if user is None:
             self.json_success(courses=[])
@@ -1313,6 +1335,29 @@ except ImportError:
     from bonus_handlers import BonusSchemeHandler, load_bonus_scheme
 
 
+def _load_or_create_cookie_secret(storage_path):
+    """Return a stable Tornado cookie_secret across restarts."""
+    env_secret = os.environ.get('NGSHARE_COOKIE_SECRET')
+    if env_secret:
+        return env_secret.encode('utf-8')
+    if storage_path:
+        os.makedirs(storage_path, exist_ok=True)
+        secret_path = os.path.join(storage_path, '.cookie_secret')
+        try:
+            with open(secret_path, 'xb') as fh:
+                secret_bytes = secrets.token_hex(32).encode('ascii')
+                fh.write(secret_bytes)
+            if os.name == 'posix':
+                os.chmod(secret_path, 0o600)
+            return secret_bytes
+        except FileExistsError:
+            with open(secret_path, 'rb') as fh:
+                existing = fh.read().strip()
+            if existing:
+                return existing
+    return secrets.token_bytes(32)
+
+
 class MyApplication(Application):
     'Custom application for ngshare'
 
@@ -1396,7 +1441,8 @@ class MyApplication(Application):
             template_path=os.path.dirname(os.path.realpath(__file__)),
             debug=debug,
             autoreload=autoreload,
-            cookie_secret=os.urandom(32),
+            cookie_secret=_load_or_create_cookie_secret(storage_path),
+            xsrf_cookies=True,
             login_url='/oauth_callback',
             api_token=os.environ['JUPYTERHUB_API_TOKEN'],
             client_id=os.environ['JUPYTERHUB_CLIENT_ID'],

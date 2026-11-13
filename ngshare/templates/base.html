@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="xsrf-token" content="{{ handler.xsrf_token.decode('ascii') }}">
     <title>{% block title %}JupyterHub Management{% end %}</title>
     <link rel="stylesheet" href="/hub/static/css/style.min.css" type="text/css"/>
     <style>
@@ -256,10 +257,19 @@
     </div>
 
     <script>
+        function getXsrfToken() {
+            const meta = document.querySelector('meta[name="xsrf-token"]');
+            if (meta && meta.content) {
+                return meta.content;
+            }
+            const match = document.cookie.match(/(?:^|;\s*)_xsrf=([^;]+)/);
+            return match ? decodeURIComponent(match[1]) : '';
+        }
+
         function showAlert(type, message) {
             const box = document.getElementById('alert-box');
             box.className = 'alert alert-' + type;
-            box.innerHTML = message;
+            box.textContent = message;
             box.style.display = 'block';
             window.scrollTo({ top: 0, behavior: 'smooth' });
         }
@@ -267,7 +277,7 @@
         function clearAlert() {
             const box = document.getElementById('alert-box');
             box.style.display = 'none';
-            box.innerHTML = '';
+            box.textContent = '';
         }
     </script>
     {% block scripts %}{% end %}

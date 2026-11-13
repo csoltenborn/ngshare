@@ -277,7 +277,10 @@
             const resp = await fetch(`{{ prefix }}classes/${encodeURIComponent(courseId)}`, {
                 method: 'PATCH',
                 credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-XSRFToken': getXsrfToken()
+                },
                 body: JSON.stringify({ enabled: newStatus })
             });
             let data = null;
@@ -362,7 +365,10 @@
             const resp = await fetch(`{{ prefix }}classes/${encodeURIComponent(courseId)}`, {
                 method: 'PATCH',
                 credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-XSRFToken': getXsrfToken()
+                },
                 body: JSON.stringify(payload)
             });
 
