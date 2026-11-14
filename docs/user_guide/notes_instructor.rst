@@ -8,7 +8,7 @@ Only the administrators can create courses due to security concerns. Please cont
 
 Managing Students
 -----------------
-Student rosters can be managed directly in the **Formgrader** web interface (under "Manage Students"), which synchronizes changes with ``ngshare`` and the local gradebook. Alternatively, instructors may use the `ngshare-course-management <course_management.html>`_ command-line tool or the JupyterHub Class Management web interface when adding or removing students.
+Please use the `ngshare-course-management <course_management.html>`_ tool when adding / removing students from a course. **Do not use Formgrader's interface to add students**, since this does not update ngshare.
 
 Configuring nbgrader
 -----------------------------------

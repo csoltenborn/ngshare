@@ -8,7 +8,6 @@ import uuid
 import json
 import asyncio
 import inspect
-import secrets
 import argparse
 import base64
 import binascii
@@ -37,18 +36,8 @@ import requests
 
 try:
     from . import dbutil
-    from .results import (
-        evaluate_student_results,
-        evaluate_course_results,
-        build_student_bonus_view,
-    )
 except ImportError:  # pragma: no cover
     import dbutil
-    from results import (
-        evaluate_student_results,
-        evaluate_course_results,
-        build_student_bonus_view,
-    )
 
 try:
     from .database import (
@@ -56,7 +45,6 @@ try:
         User,
         Course,
         Assignment,
-        CountedAssignment,
         Submission,
         File,
         InstructorAssociation,
@@ -71,7 +59,6 @@ except ImportError:  # pragma: no cover
         User,
         Course,
         Assignment,
-        CountedAssignment,
         Submission,
         File,
         InstructorAssociation,
@@ -116,47 +103,12 @@ class JupyterHubLoginHandler(RequestHandler):
             # complete oauth
             token = await self.token_for_code(code)
             # login successful, set cookie and redirect back to home
-            is_secure = (self.request.protocol == 'https')
-            self.set_secure_cookie(
-                'ngshare-oauth-token',
-                token,
-                samesite='Lax',
-                secure=is_secure,
-            )
-            next_url = self.get_argument('next', None)
-            if not next_url:
-                state_arg = self.get_argument('state', None)
-                if state_arg:
-                    try:
-                        import base64
-                        state_pad = state_arg + '=' * (-len(state_arg) % 4)
-                        state_json = json.loads(base64.urlsafe_b64decode(state_pad).decode('utf-8'))
-                        if isinstance(state_json, dict) and state_json.get('next_url'):
-                            next_url = state_json.get('next_url')
-                    except Exception:
-                        pass
-            if not next_url:
-                next_cookie = self.get_secure_cookie('ngshare-oauth-next')
-                if next_cookie:
-                    try:
-                        next_url = next_cookie.decode('utf-8', 'replace')
-                    except Exception:
-                        next_url = None
-                    self.clear_cookie('ngshare-oauth-next')
-            self.redirect(next_url or '/services/ngshare/')
+            self.set_secure_cookie('ngshare-oauth-token', token)
+            self.redirect('/services/ngshare/')
         else:
             # we are the login handler,
             # begin oauth process which will come back later with an
             # authorization_code
-            next_url = self.get_argument('next', None)
-            if next_url:
-                is_secure = (self.request.protocol == 'https')
-                self.set_secure_cookie(
-                    'ngshare-oauth-next',
-                    next_url,
-                    samesite='Lax',
-                    secure=is_secure,
-                )
             self.redirect(
                 url_concat(
                     self.settings['authorize_url'],
@@ -479,15 +431,6 @@ class MyRequestHandler(HubOAuthenticated, RequestHandler, MyHelpers):
         assert 'success' not in kwargs and 'message' not in kwargs
         self.set_status(code)
         raise Finish(json.dumps({'success': False, 'message': msg, **kwargs}))
-
-    def check_xsrf_cookie(self):
-        if (
-            "Authorization" in self.request.headers
-            or getattr(self.application, "vngshare", False)
-            or getattr(type(self).get_current_token, "__qualname__", "").startswith("MockAuth.")
-        ):
-            return
-        super().check_xsrf_cookie()
 
     async def prepare(self):
         'Runs before web requests, initializes user and db session'
@@ -1011,234 +954,6 @@ class UploadDownloadFeedback(MyRequestHandler):
         )
 
 
-class BaseServiceListCourses(MyRequestHandler):
-    'Base class for service course-list handlers'
-
-    course_relation = None
-
-    def _courses_for_user(self, user):
-        if self.course_relation is None:
-            self.json_error(500, 'Course relation not configured')
-        return getattr(user, self.course_relation)
-
-    @authenticated
-    def get(self, user_id):
-        service_token = self.settings.get('api_token')
-        if not (self.auth_token and service_token and self.auth_token == service_token):
-            self.json_error(403, 'Permission denied (service token required)')
-        user = self.db.query(User).filter(User.id == user_id).one_or_none()
-        if user is None:
-            self.json_success(courses=[])
-        courses = sorted([c.id for c in self._courses_for_user(user)])
-        self.json_success(courses=courses)
-
-
-class ServiceListInstructorCourses(BaseServiceListCourses):
-    '/service/instructor-courses/<user_id>'
-
-    course_relation = 'teaching'
-
-
-class ServiceListStudentCourses(BaseServiceListCourses):
-    '/service/student-courses/<user_id>'
-
-    course_relation = 'taking'
-
-
-class ListCountedAssignments(MyRequestHandler):
-    '/api/counted_assignments/<course_id>'
-
-    @authenticated
-    def get(self, course_id):
-        'List counted assignment IDs for a course (students+instructors)'
-        course = self.find_course(course_id)
-        self.check_course_user(course)
-        counted = sorted([ca.assignment_id for ca in course.counted_assignments])
-        self.json_success(counted_assignments=counted)
-
-
-class ManageCountedAssignment(MyRequestHandler):
-    '/api/counted_assignment/<course_id>/<assignment_id>'
-
-    @authenticated
-    def post(self, course_id, assignment_id):
-        'Set whether an assignment is counted (instructors only)'
-        course = self.find_course(course_id)
-        self.check_course_instructor(course)
-        raw_counted = self.get_argument('counted', 'true').strip().lower()
-        if raw_counted not in ('true', 'false', '1', '0'):
-            self.json_error(400, 'Invalid counted value')
-        is_counted = raw_counted in ('true', '1')
-        existing = (
-            self.db.query(CountedAssignment)
-            .filter(
-                CountedAssignment.course == course,
-                CountedAssignment.assignment_id == assignment_id,
-            )
-            .one_or_none()
-        )
-        if is_counted and existing is None:
-            self.db.add(CountedAssignment(course, assignment_id))
-            self.db.commit()
-        elif not is_counted and existing is not None:
-            self.db.delete(existing)
-            self.db.commit()
-        self.json_success(counted=is_counted)
-
-    @authenticated
-    def delete(self, course_id, assignment_id):
-        'Unmark an assignment as counted (instructors only)'
-        course = self.find_course(course_id)
-        self.check_course_instructor(course)
-        existing = (
-            self.db.query(CountedAssignment)
-            .filter(
-                CountedAssignment.course == course,
-                CountedAssignment.assignment_id == assignment_id,
-            )
-            .one_or_none()
-        )
-        if existing is not None:
-            self.db.delete(existing)
-            self.db.commit()
-        self.json_success(counted=False)
-
-
-class StudentResults(MyRequestHandler):
-    '/api/results/<course_id>/<student_id>'
-
-    def _read_stored_files(self, file_objs):
-        items = []
-        storage_path = self.application.storage_path
-        for file_obj in file_objs:
-            actual_path = os.path.join(storage_path, file_obj.actual_name)
-            try:
-                with open(actual_path, 'rb') as fh:
-                    content = fh.read()
-                items.append((file_obj.filename, content))
-            except OSError:
-                continue
-        return items
-
-    @authenticated
-    def get(self, course_id, student_id):
-        'Compute point evaluation for a student in a course'
-        course = self.find_course(course_id)
-        if self.user.id != student_id:
-            self.check_course_instructor(course)
-        student = self.find_course_user(course, student_id)
-
-        counted_ids = [ca.assignment_id for ca in course.counted_assignments]
-        counted_set = set(counted_ids)
-
-        released_assignments = {}
-        student_submissions = {}
-
-        for assignment in course.assignments:
-            if assignment.id not in counted_set:
-                continue
-            released_assignments[assignment.id] = self._read_stored_files(
-                assignment.files
-            )
-            subs = []
-            for sub in self.find_student_submissions(assignment, student):
-                subs.append(
-                    {
-                        'timestamp': sub.timestamp,
-                        'feedback_files': self._read_stored_files(
-                            sub.feedbacks
-                        ),
-                    }
-                )
-            student_submissions[assignment.id] = subs
-
-        evaluation = evaluate_student_results(
-            counted_ids,
-            released_assignments,
-            student_submissions,
-        )
-        scheme = load_bonus_scheme(self.db, course)
-        viewer_is_instructor = self.is_admin() or (
-            self.user is not None and self.is_course_instructor(course, self.user)
-        )
-        evaluation['bonus'] = build_student_bonus_view(
-            scheme,
-            evaluation['total_points'],
-            evaluation['percentage'],
-            viewer_is_instructor,
-        )
-        self.json_success(
-            course_id=course.id,
-            student_id=student.id,
-            **evaluation,
-        )
-
-
-class CourseResults(StudentResults):
-    '/api/course_results/<course_id>'
-
-    @authenticated
-    def get(self, course_id):
-        'Compute point evaluation for all students in a course'
-        course = self.find_course(course_id)
-        self.check_course_instructor(course)
-
-        counted_ids = [ca.assignment_id for ca in course.counted_assignments]
-        counted_set = set(counted_ids)
-
-        released_assignments = {}
-        for assignment in course.assignments:
-            if assignment.id not in counted_set:
-                continue
-            released_assignments[assignment.id] = self._read_stored_files(
-                assignment.files
-            )
-
-        all_student_submissions = {}
-        student_ids = [student.id for student in course.students]
-
-        for student in course.students:
-            student_subs = {}
-            for assignment in course.assignments:
-                if assignment.id not in counted_set:
-                    continue
-                subs = []
-                for sub in self.find_student_submissions(assignment, student):
-                    subs.append(
-                        {
-                            'timestamp': sub.timestamp,
-                            'feedback_files': self._read_stored_files(
-                                sub.feedbacks
-                            ),
-                        }
-                    )
-                student_subs[assignment.id] = subs
-            all_student_submissions[student.id] = student_subs
-
-        evaluation = evaluate_course_results(
-            counted_ids,
-            released_assignments,
-            all_student_submissions,
-            student_ids,
-            bonus_scheme=load_bonus_scheme(self.db, course),
-        )
-        users_by_id = {s.id: s for s in course.students}
-        for s in evaluation['students']:
-            user_obj = users_by_id.get(s['student_id'])
-            info = (
-                self.wrap_student_info(user_obj, course)
-                if user_obj
-                else {'first_name': '', 'last_name': '', 'email': ''}
-            )
-            s['first_name'] = info['first_name'] or ''
-            s['last_name'] = info['last_name'] or ''
-            s['email'] = info['email'] or ''
-        self.json_success(
-            course_id=course.id,
-            **evaluation,
-        )
-
-
 class InitDatabase(MyRequestHandler):
     '/initialize-Data6ase'
 
@@ -1300,64 +1015,6 @@ class HealthCheckHandler(RequestHandler):
         return
 
 
-try:
-    from .settings_handlers import (
-        GlobalSettingsHandler,
-        ClassesHandler,
-        ClassHandler,
-        ServiceUserClassesHandler,
-        ServiceSpawnConfigHandler,
-        SettingsAuditHandler,
-        UISettingsHandler,
-        UIClassesHandler,
-        UIClassNewHandler,
-        UIClassEditHandler,
-        UsersHandler,
-    )
-except ImportError:
-    from settings_handlers import (
-        GlobalSettingsHandler,
-        ClassesHandler,
-        ClassHandler,
-        ServiceUserClassesHandler,
-        ServiceSpawnConfigHandler,
-        SettingsAuditHandler,
-        UISettingsHandler,
-        UIClassesHandler,
-        UIClassNewHandler,
-        UIClassEditHandler,
-        UsersHandler,
-    )
-
-try:
-    from .bonus_handlers import BonusSchemeHandler, load_bonus_scheme
-except ImportError:
-    from bonus_handlers import BonusSchemeHandler, load_bonus_scheme
-
-
-def _load_or_create_cookie_secret(storage_path):
-    """Return a stable Tornado cookie_secret across restarts."""
-    env_secret = os.environ.get('NGSHARE_COOKIE_SECRET')
-    if env_secret:
-        return env_secret.encode('utf-8')
-    if storage_path:
-        os.makedirs(storage_path, exist_ok=True)
-        secret_path = os.path.join(storage_path, '.cookie_secret')
-        try:
-            with open(secret_path, 'xb') as fh:
-                secret_bytes = secrets.token_hex(32).encode('ascii')
-                fh.write(secret_bytes)
-            if os.name == 'posix':
-                os.chmod(secret_path, 0o600)
-            return secret_bytes
-        except FileExistsError:
-            with open(secret_path, 'rb') as fh:
-                existing = fh.read().strip()
-            if existing:
-                return existing
-    return secrets.token_bytes(32)
-
-
 class MyApplication(Application):
     'Custom application for ngshare'
 
@@ -1393,39 +1050,6 @@ class MyApplication(Application):
                 prefix + 'feedback/([^/]+)/([^/]+)/([^/]+)',
                 UploadDownloadFeedback,
             ),
-            (
-                prefix + 'counted_assignments/([^/]+)',
-                ListCountedAssignments,
-            ),
-            (
-                prefix + 'counted_assignment/([^/]+)/([^/]+)',
-                ManageCountedAssignment,
-            ),
-            (
-                prefix + 'results/([^/]+)/([^/]+)',
-                StudentResults,
-            ),
-            (
-                prefix + 'course_results/([^/]+)',
-                CourseResults,
-            ),
-            (
-                prefix + 'bonus_scheme/([^/]+)',
-                BonusSchemeHandler,
-            ),
-            (prefix + 'service/instructor-courses/([^/]+)', ServiceListInstructorCourses),
-            (prefix + 'service/student-courses/([^/]+)', ServiceListStudentCourses),
-            (prefix + 'settings/global', GlobalSettingsHandler),
-            (prefix + 'classes', ClassesHandler),
-            (prefix + 'classes/([^/]+)', ClassHandler),
-            (prefix + 'users', UsersHandler),
-            (prefix + 'settings/audit', SettingsAuditHandler),
-            (prefix + 'ui/settings', UISettingsHandler),
-            (prefix + 'ui/classes/new', UIClassNewHandler),
-            (prefix + 'ui/classes', UIClassesHandler),
-            (prefix + 'ui/classes/([^/]+)', UIClassEditHandler),
-            (prefix + 'service/user-classes/([^/]+)', ServiceUserClassesHandler),
-            (prefix + 'service/spawn-config/([^/]+)', ServiceSpawnConfigHandler),
             (prefix + 'initialize-Data6ase', InitDatabase),
             (prefix + 'oauth_callback', JupyterHubLoginHandler),
             (prefix + 'healthz', HealthCheckHandler),
@@ -1438,11 +1062,9 @@ class MyApplication(Application):
         handlers.append((r'.*', NotFoundHandler))
         super(MyApplication, self).__init__(
             handlers,
-            template_path=os.path.dirname(os.path.realpath(__file__)),
             debug=debug,
             autoreload=autoreload,
-            cookie_secret=_load_or_create_cookie_secret(storage_path),
-            xsrf_cookies=True,
+            cookie_secret=os.urandom(32),
             login_url='/oauth_callback',
             api_token=os.environ['JUPYTERHUB_API_TOKEN'],
             client_id=os.environ['JUPYTERHUB_CLIENT_ID'],
@@ -1452,7 +1074,6 @@ class MyApplication(Application):
             token_url=token_url,
             user_url=user_url,
         )
-        self.prefix = prefix
         # Connect Database
         engine = create_engine(db_url)
         Base.metadata.bind = engine
