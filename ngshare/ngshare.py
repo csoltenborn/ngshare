@@ -477,12 +477,16 @@ class MyRequestHandler(HubOAuthenticated, RequestHandler, MyHelpers):
         service_token = self.settings.get('api_token')
         if service_token and token == service_token:
             return {'name': 'hub', 'admin': True, 'groups': []}
-        r = await asyncio.to_thread(
-            requests.get,
-            self.settings['user_url'],
-            headers={'Authorization': f'token {token}'},
-            timeout=5,
-        )
+        try:
+            r = await asyncio.to_thread(
+                requests.get,
+                self.settings['user_url'],
+                headers={'Authorization': f'token {token}'},
+                timeout=5,
+            )
+        except requests.RequestException as exc:
+            log.app_log.warning('Failed to query JupyterHub for token: %s', exc)
+            return None
         if r.ok:
             return r.json()
 
